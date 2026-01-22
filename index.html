@@ -1,0 +1,2621 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>PES Arena — Tournament Platform</title>
+
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+
+
+
+  <style>
+    /* Small polish */
+    .no-scrollbar::-webkit-scrollbar { display:none; }
+    .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
+    @media print {
+      body { background:#fff !important; color:#000 !important; }
+      .print-hidden { display:none !important; }
+      .print-card { border:1px solid #ddd !important; background:#fff !important; }
+      .print-table th, .print-table td { padding:10px !important; }
+    }
+  </style>
+</head>
+
+<body class="bg-[#050505] text-slate-100 selection:bg-[#39FF14] selection:text-black">
+  <div id="app"></div>
+
+  <!-- Firebase + App -->
+  <script type="module">
+    /* ============================================================
+      PES ARENA — SINGLE FILE (NO BUILD)
+      Replace ONLY firebaseConfig below, then deploy as static.
+      ============================================================ */
+
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+
+    import {
+      getAuth,
+      onAuthStateChanged,
+      signOut,
+      createUserWithEmailAndPassword,
+      signInWithEmailAndPassword,
+      updateProfile
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+
+    import {
+      getFirestore,
+      collection,
+      doc,
+      getDoc,
+      setDoc,
+      addDoc,
+      updateDoc,
+      deleteDoc,
+      onSnapshot,
+      query,
+      where,
+      orderBy,
+      limit,
+      serverTimestamp,
+      increment,
+      arrayUnion,
+      arrayRemove
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+    import {
+      getDatabase,
+      ref as rref,
+      onValue,
+      set as rset,
+      onDisconnect,
+      remove as rremove
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+
+    /* =========================
+       1) FIREBASE CONFIG
+       (Replace with yours)
+    ========================= */
+    // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyDbeWlKGV9iN2ZJ3Ub52sZSM5DLzABezh4",
+  authDomain: "efootball-78.firebaseapp.com",
+  databaseURL: "https://efootball-78-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "efootball-78",
+  storageBucket: "efootball-78.firebasestorage.app",
+  messagingSenderId: "752411493506",
+  appId: "1:752411493506:web:5c8d8a9141d23a8dfb609b",
+  measurementId: "G-E4L1KSTXH7"
+};
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const rtdb = getDatabase(app);
+
+    /* =========================
+       2) UTIL
+    ========================= */
+    const $app = document.getElementById("app");
+
+    const cn = (...c) => c.filter(Boolean).join(" ");
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
+    const fmtDT = (ms) => {
+      try { return new Date(ms).toLocaleString(); } catch { return ""; }
+    };
+    const now = () => Date.now();
+
+    function toast(msg) {
+      state.toast = { msg, at: now() };
+      render();
+      setTimeout(() => {
+        if (state.toast && (now() - state.toast.at) > 2200) {
+          state.toast = null; render();
+        }
+      }, 2400);
+    }
+
+    /* =========================
+       3) GLOBAL STATE
+    ========================= */
+    const state = {
+      booting: true,
+      user: null,
+      profile: null,
+      authModalOpen: false,
+
+      globalTab: "Browse Tournaments",
+      tournamentTab: "Home",
+      activeTournamentId: null,
+
+      tournaments: [],
+      participants: [],
+      matches: [],
+      announcements: [],
+      supportTickets: [],
+
+      presence: {},
+
+      // UI
+      showProfileEdit: false,
+      showCreateTournament: false,
+      showPaymentModal: false,
+      paymentUTR: "",
+
+      // sponsor
+      sponsorIndex: 0,
+      sponsorTimer: null,
+
+      toast: null,
+      loadingAction: false
+    };
+
+    const GLOBAL_TABS = ["Browse Tournaments", "My Tournaments", "Profile", "Admin Panel"];
+    const TOURNEY_TABS = ["Home", "Players", "Standings", "Fixtures", "Bracket", "Announcements", "Support", "Admin"];
+
+    function isLoggedIn() {
+      return !!state.user && !state.user.isAnonymous;
+    }
+
+    function activeTournament() {
+      if (!state.activeTournamentId) return null;
+      return state.tournaments.find(t => t.id === state.activeTournamentId) || null;
+    }
+
+    function isAdmin(t) {
+      if (!t || !state.user) return false;
+      return (t.ownerId === state.user.uid) || (Array.isArray(t.adminIds) && t.adminIds.includes(state.user.uid));
+    }
+
+    function isRegistered(t) {
+      if (!t || !state.user) return false;
+      return Array.isArray(t.participants) && t.participants.includes(state.user.uid);
+    }
+
+    function profileComplete() {
+      return !!(state.profile && state.profile.isComplete);
+    }
+
+    /* =========================
+       4) SUBSCRIPTIONS (clean)
+    ========================= */
+    const subs = {
+      tournaments: null,
+      profile: null,
+      participants: null,
+      matches: null,
+      announcements: null,
+      support: null,
+      presence: null
+    };
+
+    function unsubscribeAllTournamentStreams() {
+      ["participants","matches","announcements","support","presence"].forEach(k => {
+        if (subs[k]) { subs[k](); subs[k] = null; }
+      });
+      state.participants = [];
+      state.matches = [];
+      state.announcements = [];
+      state.supportTickets = [];
+      state.presence = {};
+      clearSponsorTimer();
+    }
+
+    function clearSponsorTimer() {
+      if (state.sponsorTimer) { clearInterval(state.sponsorTimer); state.sponsorTimer = null; }
+      state.sponsorIndex = 0;
+    }
+
+    function startSponsorTimer(t) {
+      clearSponsorTimer();
+      const sponsors = Array.isArray(t?.sponsors) ? t.sponsors : [];
+      const cfg = t?.sponsorConfig || {};
+      const ms = Math.max(2000, Number(cfg.rotateMs || 4500));
+      if (sponsors.length <= 1) return;
+      state.sponsorTimer = setInterval(() => {
+        state.sponsorIndex = (state.sponsorIndex + 1) % sponsors.length;
+        render();
+      }, ms);
+    }
+
+    function subscribeTournaments() {
+      if (subs.tournaments) { subs.tournaments(); subs.tournaments = null; }
+      if (!isLoggedIn()) return;
+
+      const qT = query(collection(db, "tournaments"), orderBy("createdAt", "desc"), limit(200));
+      subs.tournaments = onSnapshot(qT, (snap) => {
+        state.tournaments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        // keep activeTournamentId valid
+        if (state.activeTournamentId && !state.tournaments.some(t => t.id === state.activeTournamentId)) {
+          state.activeTournamentId = null;
+          state.tournamentTab = "Home";
+          unsubscribeAllTournamentStreams();
+        }
+        render();
+      }, () => {
+        // If rules block it, still render UI
+        render();
+      });
+    }
+
+    function subscribeProfile(uid) {
+      if (subs.profile) { subs.profile(); subs.profile = null; }
+      if (!uid) return;
+
+      const refP = doc(db, "users", uid);
+      subs.profile = onSnapshot(refP, (snap) => {
+        state.profile = snap.exists() ? snap.data() : null;
+        render();
+      });
+    }
+
+    function subscribeTournamentStreams(tournamentId) {
+      unsubscribeAllTournamentStreams();
+      if (!tournamentId || !isLoggedIn()) return;
+
+      // Participants
+      subs.participants = onSnapshot(
+        query(collection(db, "participants"), where("tournamentId", "==", tournamentId)),
+        (snap) => {
+          state.participants = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (b.createdAt||0)-(a.createdAt||0));
+          render();
+        }
+      );
+
+      // Matches
+      subs.matches = onSnapshot(
+        query(collection(db, "matches"), where("tournamentId", "==", tournamentId)),
+        (snap) => {
+          state.matches = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (a.order||0)-(b.order||0));
+          render();
+        }
+      );
+
+      // Announcements
+      subs.announcements = onSnapshot(
+        query(collection(db, "announcements"), where("tournamentId", "==", tournamentId)),
+        (snap) => {
+          state.announcements = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (b.createdAt||0)-(a.createdAt||0));
+          render();
+        }
+      );
+
+      // Support tickets (array messages)
+      subs.support = onSnapshot(
+        query(collection(db, "support"), where("tournamentId", "==", tournamentId)),
+        (snap) => {
+          const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          // admin sees all, player sees own
+          const t = activeTournament();
+          const admin = isAdmin(t);
+          state.supportTickets = admin ? all : all.filter(x => x.userId === state.user.uid);
+          state.supportTickets.sort((a,b) => (b.lastUpdated||0)-(a.lastUpdated||0));
+          render();
+        }
+      );
+
+      // Presence via RTDB
+      const presRoot = rref(rtdb, `presence/${tournamentId}`);
+      subs.presence = onValue(presRoot, (snap) => {
+        state.presence = snap.val() || {};
+        render();
+      });
+
+      // Register my presence
+      const myRef = rref(rtdb, `presence/${tournamentId}/${state.user.uid}`);
+      rset(myRef, { status:"online", name: state.user.displayName || (state.profile?.playerName||"Player"), lastSeen: now() });
+      onDisconnect(myRef).remove();
+
+      // Sponsor rotation
+      startSponsorTimer(activeTournament());
+    }
+
+    /* =========================
+       5) AUTH FLOW
+    ========================= */
+    onAuthStateChanged(auth, async (u) => {
+      state.user = u || null;
+      state.booting = false;
+
+      if (!isLoggedIn()) {
+        // hard stop (no data leakage)
+        state.profile = null;
+        state.tournaments = [];
+        state.activeTournamentId = null;
+        unsubscribeAllTournamentStreams();
+        if (subs.tournaments) { subs.tournaments(); subs.tournaments=null; }
+        if (subs.profile) { subs.profile(); subs.profile=null; }
+        render();
+        return;
+      }
+
+      subscribeProfile(u.uid);
+      subscribeTournaments();
+      render();
+    });
+
+    /* =========================
+       6) CORE ACTIONS
+    ========================= */
+    async function authLogin(email, password) {
+      state.loadingAction = true; render();
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+        state.authModalOpen = false;
+        toast("Logged in");
+      } catch (e) {
+        toast(e?.message || "Login failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function authSignup(name, email, password) {
+      state.loadingAction = true; render();
+      try {
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        await updateProfile(cred.user, { displayName: name });
+        await setDoc(doc(db, "users", cred.user.uid), {
+          playerName: name,
+          gameName: "",
+          mobile: "",
+          gameId: "",
+          upiId: "",
+          platform: "Mobile",
+          region: "South Asia",
+          isComplete: false,
+          createdAt: now()
+        }, { merge:true });
+        state.authModalOpen = false;
+        toast("Account created");
+      } catch (e) {
+        toast(e?.message || "Signup failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function doLogout() {
+      try { await signOut(auth); } catch {}
+    }
+
+    function enterTournament(id) {
+      state.activeTournamentId = id;
+      state.tournamentTab = "Home";
+      subscribeTournamentStreams(id);
+      render();
+    }
+
+    function exitTournament() {
+      state.activeTournamentId = null;
+      state.tournamentTab = "Home";
+      unsubscribeAllTournamentStreams();
+      render();
+    }
+
+    async function saveProfile(form) {
+      if (!state.user) return;
+      const isComplete = !!(form.playerName && form.gameName && form.mobile && form.gameId && form.upiId);
+      state.loadingAction = true; render();
+      try {
+        await setDoc(doc(db, "users", state.user.uid), {
+          ...form,
+          isComplete,
+          updatedAt: now()
+        }, { merge:true });
+
+        // Also update auth displayName for presence & UI
+        try {
+          if (form.playerName && state.user.displayName !== form.playerName) {
+            await updateProfile(auth.currentUser, { displayName: form.playerName });
+          }
+        } catch {}
+
+        state.showProfileEdit = false;
+        toast(isComplete ? "Profile verified" : "Profile saved");
+      } catch (e) {
+        toast(e?.message || "Profile save failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function createTournament(form) {
+      if (!state.user) return;
+      state.loadingAction = true; render();
+      try {
+        const ref = await addDoc(collection(db, "tournaments"), {
+          ...form,
+          ownerId: state.user.uid,
+          organizerName: state.user.displayName || form.organizerName || "Organizer",
+          status: "Registration Open",
+          createdAt: now(),
+          playerCount: 0,
+          participants: [],
+          adminIds: [],
+          sponsors: form.sponsors || [],
+          sponsorConfig: form.sponsorConfig || { rotateMs: 4500 }
+        });
+        state.showCreateTournament = false;
+        toast("Tournament created");
+        enterTournament(ref.id);
+      } catch (e) {
+        toast(e?.message || "Create failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function requestJoinTournament(t) {
+      if (!state.user || !t) return;
+
+      // gating
+      if (!profileComplete()) {
+        toast("Complete profile to join");
+        state.globalTab = "Profile";
+        state.showProfileEdit = true;
+        exitTournament();
+        render();
+        return;
+      }
+
+      if (t.status !== "Registration Open") {
+        toast("Registration closed");
+        return;
+      }
+
+      const full = (Number(t.playerCount||0) >= Number(t.maxPlayers||0));
+      if (full) {
+        toast("Tournament full");
+        return;
+      }
+
+      // paid flow
+      if (t.type === "Paid" && Number(t.entryFee||0) > 0) {
+        state.showPaymentModal = true;
+        state.paymentUTR = "";
+        render();
+        return;
+      }
+
+      await finalizeJoin(t, null);
+    }
+
+    async function finalizeJoin(t, utr) {
+      if (!state.user || !t) return;
+      state.loadingAction = true; render();
+      try {
+        // prevent double join
+        if (isRegistered(t)) {
+          state.showPaymentModal = false;
+          toast("Already registered");
+          return;
+        }
+
+        const p = state.profile || {};
+        await addDoc(collection(db, "participants"), {
+          tournamentId: t.id,
+          userId: state.user.uid,
+          playerName: p.playerName || (state.user.displayName || "Player"),
+          gameName: p.gameName || "",
+          mobile: p.mobile || "",
+          gameId: p.gameId || "",
+          upiId: p.upiId || "",
+          platform: p.platform || "Mobile",
+          region: p.region || "South Asia",
+
+          status: "pending",
+          createdAt: now(),
+          utr: utr || null,
+          paid: (t.type === "Paid"),
+          disputeStrikes: 0,
+          accuracyConfirmed: 0,
+          accuracyTotal: 0,
+          assignedTeam: null
+        });
+
+        await updateDoc(doc(db, "tournaments", t.id), {
+          participants: arrayUnion(state.user.uid)
+        });
+
+        state.showPaymentModal = false;
+        toast("Join requested (pending approval)");
+      } catch (e) {
+        toast(e?.message || "Join failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function approveParticipant(participantId, tournamentId) {
+      state.loadingAction = true; render();
+      try {
+        await updateDoc(doc(db, "participants", participantId), { status: "approved", approvedAt: now() });
+        await updateDoc(doc(db, "tournaments", tournamentId), { playerCount: increment(1) });
+        toast("Approved");
+      } catch (e) {
+        toast(e?.message || "Approve failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function setAdminUid(tid, uid, add=true) {
+      if (!tid || !uid) return;
+      state.loadingAction = true; render();
+      try {
+        await updateDoc(doc(db, "tournaments", tid), {
+          adminIds: add ? arrayUnion(uid) : arrayRemove(uid)
+        });
+        toast(add ? "Admin granted" : "Admin removed");
+      } catch (e) {
+        toast(e?.message || "Permission update failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function postAnnouncement(tid, content, type="manual") {
+      if (!tid || !content.trim()) return;
+      state.loadingAction = true; render();
+      try {
+        await addDoc(collection(db, "announcements"), {
+          tournamentId: tid,
+          content: content.trim(),
+          createdAt: now(),
+          createdBy: state.user.uid,
+          type
+        });
+        toast("Announcement sent");
+      } catch (e) {
+        toast(e?.message || "Announcement failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    /* =========================
+       Fixtures + Match Center
+    ========================= */
+    function roundRobinCircle(players) {
+      // players = [{userId, playerName}]
+      const ps = [...players];
+      if (ps.length < 2) return [];
+      if (ps.length % 2 !== 0) ps.push({ userId:"bye", playerName:"BYE" });
+      const rounds = ps.length - 1;
+      const half = ps.length / 2;
+      const schedule = [];
+      let order = 0;
+
+      for (let r = 0; r < rounds; r++) {
+        for (let i = 0; i < half; i++) {
+          const A = ps[i];
+          const B = ps[ps.length - 1 - i];
+          if (A.userId !== "bye" && B.userId !== "bye") {
+            schedule.push({
+              order: order++,
+              roundName: `Matchday ${r+1}`,
+              playerAId: A.userId, playerAName: A.playerName,
+              playerBId: B.userId, playerBName: B.playerName
+            });
+          }
+        }
+        // rotate (keep first fixed)
+        ps.splice(1, 0, ps.pop());
+      }
+      return schedule;
+    }
+
+    async function generateLeagueFixtures(t) {
+      if (!t) return;
+      const confirmed = state.participants.filter(p => p.status === "approved");
+      if (confirmed.length < 2) { toast("Need 2+ approved players"); return; }
+
+      state.loadingAction = true; render();
+      try {
+        // prevent regen if matches exist
+        if (state.matches.length > 0) {
+          toast("Matches already exist");
+          return;
+        }
+
+        const schedule = roundRobinCircle(confirmed.map(p => ({ userId: p.userId, playerName: p.playerName })));
+        for (const m of schedule) {
+          await addDoc(collection(db, "matches"), {
+            tournamentId: t.id,
+            order: m.order,
+            roundName: m.roundName,
+            status: "pending",
+            playerAId: m.playerAId,
+            playerAName: m.playerAName,
+            playerBId: m.playerBId,
+            playerBName: m.playerBName,
+            score: { a: 0, b: 0 },
+            readyA: false,
+            readyB: false
+          });
+        }
+        await updateDoc(doc(db, "tournaments", t.id), { status: "Live" });
+        toast("Fixtures generated");
+      } catch (e) {
+        toast(e?.message || "Generator failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    // Match Center modal
+    async function toggleReady(match) {
+      if (!match || !state.user) return;
+      const isA = match.playerAId === state.user.uid;
+      const isB = match.playerBId === state.user.uid;
+      if (!isA && !isB) return;
+
+      const field = isA ? "readyA" : "readyB";
+      const val = isA ? !match.readyA : !match.readyB;
+
+      state.loadingAction = true; render();
+      try {
+        await updateDoc(doc(db, "matches", match.id), { [field]: val });
+      } catch (e) {
+        toast(e?.message || "Ready toggle failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function submitScore(match, a, b) {
+      if (!match || !state.user) return;
+      const isA = match.playerAId === state.user.uid;
+      const isB = match.playerBId === state.user.uid;
+      if (!isA && !isB) return;
+
+      // update my accuracyTotal
+      const myP = state.participants.find(p => p.userId === state.user.uid);
+      if (!myP) { toast("Participant not found"); return; }
+
+      state.loadingAction = true; render();
+      try {
+        await updateDoc(doc(db, "participants", myP.id), { accuracyTotal: increment(1) });
+        await updateDoc(doc(db, "matches", match.id), {
+          score: { a: Number(a), b: Number(b) },
+          status: "pending_confirmation",
+          submittedBy: state.user.uid,
+          submittedAt: now()
+        });
+        toast("Score submitted");
+      } catch (e) {
+        toast(e?.message || "Submit failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function confirmScore(match) {
+      if (!match || !state.user) return;
+      const isA = match.playerAId === state.user.uid;
+      const isB = match.playerBId === state.user.uid;
+      if (!isA && !isB) return;
+      if (match.submittedBy === state.user.uid) return;
+
+      state.loadingAction = true; render();
+      try {
+        // reward submitter accuracyConfirmed
+        const submitter = state.participants.find(p => p.userId === match.submittedBy);
+        if (submitter) {
+          await updateDoc(doc(db, "participants", submitter.id), { accuracyConfirmed: increment(1) });
+        }
+        await updateDoc(doc(db, "matches", match.id), { status: "confirmed", confirmedAt: now() });
+        toast("Confirmed");
+        state.uiMatchModal = null;
+      } catch (e) {
+        toast(e?.message || "Confirm failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function disputeScore(match) {
+      if (!match || !state.user) return;
+      const isA = match.playerAId === state.user.uid;
+      const isB = match.playerBId === state.user.uid;
+      if (!isA && !isB) return;
+
+      const myP = state.participants.find(p => p.userId === state.user.uid);
+      if (!myP) return;
+
+      state.loadingAction = true; render();
+      try {
+        await updateDoc(doc(db, "participants", myP.id), { disputeStrikes: increment(1) });
+        await updateDoc(doc(db, "matches", match.id), { status: "disputed", disputerId: state.user.uid, disputedAt: now() });
+
+        // simple policy: if strikes >=3 -> mark participant flagged (UI)
+        toast("Disputed (strike added)");
+        state.uiMatchModal = null;
+      } catch (e) {
+        toast(e?.message || "Dispute failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    async function adminResolveDispute(matchId, winnerSide) {
+      const t = activeTournament();
+      if (!isAdmin(t)) return;
+
+      const m = state.matches.find(x => x.id === matchId);
+      if (!m) return;
+
+      state.loadingAction = true; render();
+      try {
+        // minimal resolution: confirm as-is OR you can set score if you want later
+        await updateDoc(doc(db, "matches", matchId), { status: "confirmed", resolvedAt: now(), resolvedBy: state.user.uid });
+        toast("Dispute resolved");
+      } catch (e) {
+        toast(e?.message || "Resolve failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    /* =========================
+       Support Chat
+    ========================= */
+    async function sendSupportMessage(tid, text, ticketId=null) {
+      if (!tid || !text.trim()) return;
+      state.loadingAction = true; render();
+      try {
+        const msg = { senderId: state.user.uid, senderName: state.user.displayName || (state.profile?.playerName||"Player"), text: text.trim(), createdAt: now() };
+
+        if (ticketId) {
+          await updateDoc(doc(db, "support", ticketId), {
+            messages: arrayUnion(msg),
+            lastUpdated: now()
+          });
+        } else {
+          await addDoc(collection(db, "support"), {
+            tournamentId: tid,
+            userId: state.user.uid,
+            userName: state.user.displayName || (state.profile?.playerName||"Player"),
+            messages: [msg],
+            lastUpdated: now()
+          });
+        }
+        toast("Sent");
+      } catch (e) {
+        toast(e?.message || "Support failed");
+      } finally {
+        state.loadingAction = false; render();
+      }
+    }
+
+    /* =========================
+       7) STANDINGS (computed)
+    ========================= */
+    function computeStandings() {
+      const ps = state.participants.filter(p => p.status === "approved" || p.status === "pending" || p.status === "banned");
+      const rows = ps.map(p => ({
+        userId: p.userId,
+        name: p.playerName || "Player",
+        p:0,w:0,d:0,l:0,gf:0,ga:0,gd:0,pts:0
+      }));
+
+      const confirmed = state.matches.filter(m => m.status === "confirmed");
+      for (const m of confirmed) {
+        const A = rows.find(r => r.userId === m.playerAId);
+        const B = rows.find(r => r.userId === m.playerBId);
+        if (!A || !B) continue;
+        const sa = Number(m.score?.a ?? 0);
+        const sb = Number(m.score?.b ?? 0);
+
+        A.p++; B.p++;
+        A.gf += sa; A.ga += sb;
+        B.gf += sb; B.ga += sa;
+
+        if (sa > sb) { A.w++; A.pts += 3; B.l++; }
+        else if (sb > sa) { B.w++; B.pts += 3; A.l++; }
+        else { A.d++; B.d++; A.pts += 1; B.pts += 1; }
+      }
+      for (const r of rows) r.gd = r.gf - r.ga;
+
+      // sort PTS > GD > GF
+      rows.sort((a,b) => (b.pts-a.pts) || (b.gd-a.gd) || (b.gf-a.gf) || (a.name.localeCompare(b.name)));
+      return rows;
+    }
+
+    /* =========================
+       8) UI RENDER
+    ========================= */
+
+    function Icon(name, cls="") {
+      // minimal inline icons
+      const common = `fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"`;
+      const map = {
+        trophy: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0V4Z"/><path d="M4 6h3v3a4 4 0 0 1-3-3Z"/><path d="M20 6h-3v3a4 4 0 0 0 3-3Z"/></svg>`,
+        user: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>`,
+        logout: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>`,
+        chevron: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="m9 18 6-6-6-6"/></svg>`,
+        plus: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="M12 5v14"/><path d="M5 12h14"/></svg>`,
+        shield: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>`,
+        megaphone: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="M3 11v2"/><path d="M6 10v4"/><path d="M9 9v6"/><path d="M12 8v8"/><path d="M15 9v6"/><path d="M18 10v4"/><path d="M21 11v2"/></svg>`,
+        chat: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>`,
+        check: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="M20 6 9 17l-5-5"/></svg>`,
+        x: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>`,
+        download: `<svg class="${cls}" viewBox="0 0 24 24" ${common}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>`
+      };
+      return map[name] || "";
+    }
+
+    function ChipTabs(tabs, active, onChangeName) {
+      return `
+        <div class="flex overflow-x-auto no-scrollbar gap-2">
+          ${tabs.map(t => `
+            <button
+              data-action="${onChangeName}"
+              data-value="${esc(t)}"
+              class="${cn(
+                "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap border transition-all",
+                active===t ? "bg-[#39FF14] text-black border-[#39FF14] shadow-[0_0_25px_rgba(57,255,20,0.15)]" : "bg-white/5 text-slate-500 border-white/10 hover:text-slate-200"
+              )}"
+            >${esc(t)}</button>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function TopShellBar() {
+      const u = state.user;
+      const prof = state.profile;
+      return `
+        <div class="sticky top-0 z-50 bg-[#0a0a0a]/90 backdrop-blur-xl border-b border-white/10 print-hidden">
+          <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-2xl bg-[#39FF14] text-black flex items-center justify-center">
+                ${Icon("trophy","w-6 h-6")}
+              </div>
+              <div>
+                <div class="text-[11px] font-black uppercase tracking-[0.35em] text-slate-200">PES Arena</div>
+                <div class="text-[9px] font-black uppercase tracking-widest text-slate-600">Tournament Platform</div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-3">
+              <div class="hidden sm:flex flex-col items-end">
+                <div class="text-[11px] font-black uppercase text-white">${esc(u?.displayName || "Player")}</div>
+                <div class="flex items-center gap-2">
+                  <span class="${cn(
+                    "w-1.5 h-1.5 rounded-full",
+                    prof?.isComplete ? "bg-[#39FF14] shadow-[0_0_10px_#39FF14]" : "bg-orange-500"
+                  )}"></span>
+                  <span class="${cn(
+                    "text-[8px] font-black uppercase tracking-widest",
+                    prof?.isComplete ? "text-[#39FF14]" : "text-orange-500"
+                  )}">${prof?.isComplete ? "Pro Verified" : "Incomplete"}</span>
+                </div>
+              </div>
+
+              <button data-action="logout" class="p-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 hover:text-red-400 hover:border-red-500/30">
+                ${Icon("logout","w-4 h-4")}
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function PublicLanding() {
+      return `
+        <div class="min-h-screen bg-[#050505] text-slate-100">
+          <div class="max-w-6xl mx-auto px-4 py-12 md:py-20">
+            <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-14 shadow-2xl relative overflow-hidden">
+              <div class="absolute -top-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full"></div>
+
+              <div class="relative z-10 space-y-6">
+                <div class="inline-flex items-center gap-3 px-5 py-2 rounded-full border border-white/10 bg-white/5">
+                  <span class="w-2 h-2 rounded-full bg-[#39FF14] shadow-[0_0_10px_#39FF14]"></span>
+                  <span class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">PES Arena Platform</span>
+                </div>
+
+                <h1 class="text-5xl md:text-7xl font-black italic uppercase tracking-tighter leading-none">
+                  Run eFootball Tournaments Like a Pro.
+                </h1>
+
+                <p class="text-slate-400 font-bold leading-relaxed max-w-3xl">
+                  League / Knockout / Group+Knockout tournaments with live standings, match confirmation, disputes,
+                  announcements, sponsor rotation, presence, and private support chat — inside one platform.
+                </p>
+
+                <div class="flex flex-col sm:flex-row gap-4 pt-2">
+                  <button data-action="openAuth" class="px-10 py-5 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[11px] shadow-[0_0_35px_rgba(57,255,20,0.25)] hover:scale-[1.01] transition-transform">
+                    Login / Sign Up
+                  </button>
+
+                  <div class="px-10 py-5 rounded-2xl border border-white/10 bg-white/5 text-slate-300 font-black uppercase tracking-widest text-[11px]">
+                    No preview • No data leakage
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-10 md:mt-14">
+              ${FeatureCard("For Organizers", [
+                "Create tournaments (League / Knockout / Group + Knockout)",
+                "Approve players + manage admins",
+                "Generate fixtures (Round Robin) + bracket view",
+                "Announcements with unread markers",
+                "Dispute center + strike system",
+                "Sponsor rotation + matchday banner",
+                "PDF export via Print (Standings/Bracket)"
+              ])}
+
+              ${FeatureCard("For Players", [
+                "Join tournaments (Free / Paid with UTR)",
+                "Ready check + submit score",
+                "Opponent confirm or dispute",
+                "Accuracy rating for submitters",
+                "Presence indicator (online/offline)",
+                "Standings, fixtures, bracket & announcements",
+                "Support chat with admin/organizer"
+              ])}
+            </div>
+
+            <div class="text-center text-slate-700 font-black uppercase tracking-[0.4em] text-[10px] mt-14">
+              Built for mobile-first tournaments
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function FeatureCard(title, items) {
+      return `
+        <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
+          <div class="flex items-end justify-between gap-6">
+            <h2 class="text-2xl md:text-3xl font-black italic uppercase tracking-tighter">${esc(title)}</h2>
+            <div class="text-[10px] font-black uppercase tracking-[0.35em] text-[#39FF14]">Capability</div>
+          </div>
+
+          <div class="mt-8 space-y-4">
+            ${items.map(x => `
+              <div class="flex gap-3 items-start border border-white/5 bg-white/5 rounded-2xl px-6 py-4">
+                <div class="mt-1 w-2 h-2 rounded-full bg-[#39FF14] shadow-[0_0_12px_#39FF14]"></div>
+                <div class="text-slate-300 font-bold leading-relaxed">${esc(x)}</div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    }
+
+    function AuthModal() {
+      const loading = state.loadingAction;
+      return `
+        <div class="fixed inset-0 z-[100] bg-black/90 backdrop-blur-xl flex items-center justify-center p-4 print-hidden">
+          <div class="w-full max-w-lg rounded-[2.5rem] border border-[#39FF14]/20 bg-[#0a0a0a] p-10 shadow-2xl relative overflow-hidden">
+            <div class="absolute top-0 left-0 w-full h-1.5 bg-[#39FF14]"></div>
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h3 class="text-2xl font-black italic uppercase tracking-tighter">Login / Sign Up</h3>
+                <p class="text-slate-500 font-black uppercase tracking-widest text-[10px] mt-2">
+                  Email/Password (Firebase)
+                </p>
+              </div>
+              <button data-action="closeAuth" class="p-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 hover:border-[#39FF14]/30">
+                ${Icon("x","w-4 h-4")}
+              </button>
+            </div>
+
+            <div class="mt-8 grid grid-cols-1 gap-6">
+              <div class="rounded-2xl border border-white/10 bg-black p-5">
+                <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">Login</div>
+                <div class="grid gap-3">
+                  <input id="loginEmail" class="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-5 py-4 text-sm font-bold outline-none focus:border-[#39FF14]" placeholder="Email" />
+                  <input id="loginPass" type="password" class="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-5 py-4 text-sm font-bold outline-none focus:border-[#39FF14]" placeholder="Password" />
+                  <button data-action="doLogin" class="${cn(
+                    "w-full px-8 py-4 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all",
+                    loading ? "bg-white/10 text-slate-500 border border-white/10 cursor-not-allowed" : "bg-[#39FF14] text-black"
+                  )}">${loading ? "Please wait..." : "Login"}</button>
+                </div>
+              </div>
+
+              <div class="rounded-2xl border border-white/10 bg-black p-5">
+                <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">Sign Up</div>
+                <div class="grid gap-3">
+                  <input id="signupName" class="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-5 py-4 text-sm font-bold outline-none focus:border-[#39FF14]" placeholder="Display Name" />
+                  <input id="signupEmail" class="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-5 py-4 text-sm font-bold outline-none focus:border-[#39FF14]" placeholder="Email" />
+                  <input id="signupPass" type="password" class="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-5 py-4 text-sm font-bold outline-none focus:border-[#39FF14]" placeholder="Password" />
+                  <button data-action="doSignup" class="${cn(
+                    "w-full px-8 py-4 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all",
+                    loading ? "bg-white/10 text-slate-500 border border-white/10 cursor-not-allowed" : "bg-white text-black hover:bg-[#39FF14]"
+                  )}">${loading ? "Please wait..." : "Create Account"}</button>
+                </div>
+              </div>
+
+              <div class="text-[9px] font-black uppercase tracking-widest text-slate-600 text-center">
+                Tip: After sign up, complete Profile to join tournaments.
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function GlobalLayout(content) {
+      return `
+        ${TopShellBar()}
+        <main class="max-w-7xl mx-auto p-4 md:p-8 pb-28">
+          ${content}
+        </main>
+        ${ToastUI()}
+      `;
+    }
+
+    function TournamentLayout(t, inner) {
+      const admin = isAdmin(t);
+      const tabs = TOURNEY_TABS.filter(x => x !== "Admin" || admin);
+
+      return `
+        ${TopShellBar()}
+        <div class="sticky top-16 z-40 bg-[#0a0a0a]/85 backdrop-blur-xl border-b border-white/10 print-hidden">
+          <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3 justify-between">
+            <div class="min-w-0">
+              <div class="text-[12px] font-black uppercase tracking-widest text-slate-400">Tournament</div>
+              <div class="text-lg font-black italic uppercase tracking-tighter truncate">${esc(t?.name||"Tournament")}</div>
+            </div>
+
+            <button data-action="exitTournament" class="px-4 py-2 rounded-xl border border-white/10 bg-white/5 text-slate-200 font-black uppercase tracking-widest text-[10px] hover:border-[#39FF14]/30">
+              Exit
+            </button>
+          </div>
+
+          <div class="max-w-7xl mx-auto px-4 pb-3">
+            <div class="flex overflow-x-auto no-scrollbar gap-2">
+              ${tabs.map(tab => `
+                <button data-action="setTournamentTab" data-value="${esc(tab)}"
+                  class="${cn(
+                    "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap border transition-all",
+                    state.tournamentTab===tab ? "bg-[#39FF14] text-black border-[#39FF14]" : "bg-white/5 text-slate-500 border-white/10 hover:text-slate-200"
+                  )}">
+                  ${esc(tab)}
+                </button>
+              `).join("")}
+            </div>
+          </div>
+        </div>
+
+        <main class="max-w-7xl mx-auto p-4 md:p-8 pb-28">
+          ${inner}
+        </main>
+        ${ToastUI()}
+      `;
+    }
+
+    function SponsorBannerUI(t) {
+      const sponsors = Array.isArray(t?.sponsors) ? t.sponsors : [];
+      if (!sponsors.length) return "";
+      const s = sponsors[Math.min(state.sponsorIndex, sponsors.length-1)];
+      const name = (typeof s === "string") ? s : (s?.name || "Sponsor");
+      const link = (typeof s === "object") ? (s?.link || "") : "";
+      const tagline = (typeof s === "object") ? (s?.tagline || "") : "";
+      const matchday = t?.currentMatchday || "";
+
+      return `
+        <div class="rounded-[2rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl relative overflow-hidden">
+          <div class="absolute -top-24 -right-24 w-64 h-64 bg-[#39FF14]/10 blur-3xl rounded-full"></div>
+          <div class="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div class="text-[10px] font-black uppercase tracking-[0.5em] text-slate-500">Sponsor Broadcast</div>
+              <div class="mt-2 text-2xl font-black italic uppercase tracking-tighter text-white">
+                ${esc(name)}
+              </div>
+              ${tagline ? `<div class="mt-1 text-[11px] font-bold text-slate-400">${esc(tagline)}</div>` : ""}
+              ${matchday ? `<div class="mt-2 text-[9px] font-black uppercase tracking-widest text-[#39FF14]">Matchday: ${esc(matchday)}</div>` : ""}
+            </div>
+            <div class="flex items-center gap-3">
+              ${link ? `<a href="${esc(link)}" target="_blank" class="px-6 py-3 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">Visit</a>` : ""}
+              <div class="px-6 py-3 rounded-xl border border-white/10 bg-white/5 text-slate-300 font-black uppercase tracking-widest text-[10px]">
+                Auto-rotating
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function ToastUI() {
+      if (!state.toast) return "";
+      return `
+        <div class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] print-hidden">
+          <div class="px-6 py-4 rounded-2xl bg-black/90 border border-white/10 shadow-2xl text-slate-200 font-black uppercase tracking-widest text-[10px]">
+            ${esc(state.toast.msg)}
+          </div>
+        </div>
+      `;
+    }
+
+    /* =========================
+       9) PAGES
+    ========================= */
+
+    function PageBrowseTournaments() {
+      const list = state.tournaments;
+
+      return `
+        <div class="space-y-8">
+          <div class="flex items-end justify-between border-l-4 border-[#39FF14] pl-6">
+            <div>
+              <h2 class="text-4xl font-black italic uppercase tracking-tighter">Browse</h2>
+              <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Public tournaments</p>
+            </div>
+            <button data-action="openCreateTournament" class="px-6 py-3 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px] hover:scale-[1.02] transition-transform">
+              ${Icon("plus","w-4 h-4 inline-block -mt-0.5 mr-2")}Create
+            </button>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            ${list.map(t => TournamentCard(t)).join("")}
+          </div>
+
+          ${!list.length ? `
+            <div class="py-20 text-center text-slate-600 font-black uppercase tracking-widest text-[10px]">
+              No tournaments found
+            </div>` : ""}
+        </div>
+      `;
+    }
+
+    function TournamentCard(t) {
+      const fee = t.type === "Paid" ? `INR ${Number(t.entryFee||0)}` : "FREE";
+      const p = `${Number(t.playerCount||0)}/${Number(t.maxPlayers||0)}`;
+      return `
+        <div class="group rounded-[2.2rem] border border-white/10 bg-[#0a0a0a] p-8 shadow-2xl cursor-pointer hover:border-[#39FF14]/40 transition-all relative overflow-hidden"
+             data-action="enterTournament" data-value="${esc(t.id)}">
+          <div class="absolute top-0 left-0 w-1 h-full bg-[#39FF14] opacity-0 group-hover:opacity-100"></div>
+          <div class="absolute -bottom-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full opacity-50"></div>
+
+          <div class="relative z-10 space-y-3">
+            <div class="flex flex-wrap gap-2">
+              <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">${esc(t.format||"League")}</span>
+              <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">${esc(t.mode||"Normal")}</span>
+              <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-[#39FF14]/30 text-[#39FF14] bg-[#39FF14]/5">${esc(t.status||"Open")}</span>
+            </div>
+
+            <div class="text-2xl font-black italic uppercase tracking-tighter text-white group-hover:text-[#39FF14] transition-colors">
+              ${esc(t.name || "Tournament")}
+            </div>
+            <div class="text-[10px] font-black uppercase tracking-[0.4em] text-slate-600">${esc(t.game || "eFootball")}</div>
+
+            <div class="pt-5 border-t border-white/10 flex items-center justify-between">
+              <div class="flex gap-2">
+                <div class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-[9px] font-black uppercase tracking-widest text-slate-300">${esc(p)}</div>
+                <div class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-[9px] font-black uppercase tracking-widest text-slate-300">${esc(fee)}</div>
+              </div>
+              <div class="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center group-hover:bg-[#39FF14] group-hover:text-black transition-all">
+                ${Icon("chevron","w-6 h-6")}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function PageMyTournaments() {
+      const uid = state.user.uid;
+      const mine = state.tournaments.filter(t => t.ownerId === uid || (Array.isArray(t.participants) && t.participants.includes(uid)));
+
+      return `
+        <div class="space-y-8">
+          <div class="border-l-4 border-[#39FF14] pl-6">
+            <h2 class="text-4xl font-black italic uppercase tracking-tighter">My Tournaments</h2>
+            <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Joined + Owned</p>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            ${mine.map(t => TournamentCard(t)).join("")}
+          </div>
+
+          ${!mine.length ? `
+            <div class="py-20 text-center text-slate-600 font-black uppercase tracking-widest text-[10px]">
+              Nothing here yet — join or create a tournament.
+            </div>` : ""}
+        </div>
+      `;
+    }
+
+    function PageProfile() {
+      const p = state.profile || {};
+      const complete = !!p.isComplete;
+
+      return `
+        <div class="space-y-10">
+          <div class="flex items-end justify-between border-l-4 border-[#39FF14] pl-6">
+            <div>
+              <h2 class="text-4xl font-black italic uppercase tracking-tighter">Profile</h2>
+              <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Athlete registry</p>
+            </div>
+            <span class="${cn(
+              "px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border",
+              complete ? "border-[#39FF14]/30 bg-[#39FF14]/10 text-[#39FF14]" : "border-orange-500/30 bg-orange-500/10 text-orange-400"
+            )}">
+              ${complete ? "Verified" : "Incomplete"}
+            </span>
+          </div>
+
+          ${state.showProfileEdit ? ProfileEditForm(p) : ProfileReadOnly(p)}
+        </div>
+      `;
+    }
+
+    function ProfileReadOnly(p) {
+      return `
+        <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            ${ProfileRow("Player Name", p.playerName || "—")}
+            ${ProfileRow("Game Name", p.gameName || "—")}
+            ${ProfileRow("Mobile", p.mobile || "—")}
+            ${ProfileRow("Game ID", p.gameId || "—")}
+            ${ProfileRow("UPI ID", p.upiId || "—")}
+            ${ProfileRow("Region", p.region || "South Asia")}
+            ${ProfileRow("Platform", p.platform || "Mobile")}
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-6 opacity-60">
+              <div class="text-[9px] font-black uppercase tracking-widest text-slate-500">Account Email</div>
+              <div class="mt-2 text-lg font-black uppercase tracking-tight text-white truncate">${esc(state.user.email||"—")}</div>
+            </div>
+          </div>
+
+          <div class="mt-8 flex gap-3">
+            <button data-action="openProfileEdit" class="flex-1 px-8 py-4 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px] hover:scale-[1.01] transition-transform">
+              Edit Profile
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    function ProfileEditForm(p) {
+      return `
+        <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            ${Input("playerName","Player Name", p.playerName || "", "Your tournament name")}
+            ${Input("gameName","Game Name", p.gameName || "", "In-game name")}
+            ${Input("mobile","Mobile", p.mobile || "", "Phone")}
+            ${Input("gameId","Game ID", p.gameId || "", "Your game ID")}
+            ${Input("upiId","UPI ID", p.upiId || "", "UPI for payouts")}
+            ${Select("platform","Platform", p.platform || "Mobile", ["Mobile","Console","PC"])}
+            ${Select("region","Region", p.region || "South Asia", ["South Asia","Asia","Europe","Americas","Africa","Middle East","Oceania"])}
+          </div>
+
+          <div class="mt-8 flex gap-3">
+            <button data-action="closeProfileEdit" class="flex-1 px-8 py-4 rounded-2xl border border-white/10 bg-white/5 text-slate-200 font-black uppercase tracking-widest text-[10px]">
+              Cancel
+            </button>
+            <button data-action="saveProfile" class="flex-[2] px-8 py-4 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
+              Save
+            </button>
+          </div>
+
+          <div class="mt-6 text-[9px] font-black uppercase tracking-widest text-slate-600">
+            Profile is considered <span class="text-[#39FF14]">Verified</span> only when: Player Name, Game Name, Mobile, Game ID, UPI ID are filled.
+          </div>
+        </div>
+      `;
+    }
+
+    function ProfileRow(label, value) {
+      return `
+        <div class="rounded-2xl border border-white/10 bg-white/5 p-6">
+          <div class="text-[9px] font-black uppercase tracking-widest text-slate-500">${esc(label)}</div>
+          <div class="mt-2 text-lg font-black uppercase tracking-tight text-white">${esc(value)}</div>
+        </div>
+      `;
+    }
+
+    function Input(id,label,value,ph="") {
+      return `
+        <div class="space-y-2">
+          <div class="text-[10px] font-black uppercase tracking-[0.25em] text-slate-500">${esc(label)}</div>
+          <input id="form_${esc(id)}" value="${esc(value)}" placeholder="${esc(ph)}"
+            class="w-full bg-black border border-white/10 rounded-xl px-5 py-4 text-sm font-bold text-slate-200 outline-none focus:border-[#39FF14]" />
+        </div>
+      `;
+    }
+    function Select(id,label,value,options) {
+      return `
+        <div class="space-y-2">
+          <div class="text-[10px] font-black uppercase tracking-[0.25em] text-slate-500">${esc(label)}</div>
+          <select id="form_${esc(id)}" class="w-full bg-black border border-white/10 rounded-xl px-5 py-4 text-sm font-bold text-slate-200 outline-none focus:border-[#39FF14]">
+            ${options.map(o => `<option ${o===value?"selected":""} value="${esc(o)}">${esc(o)}</option>`).join("")}
+          </select>
+        </div>
+      `;
+    }
+
+    function PageAdminPanel() {
+      const uid = state.user.uid;
+      const owned = state.tournaments.filter(t => t.ownerId === uid);
+
+      return `
+        <div class="space-y-8">
+          <div class="flex items-end justify-between border-l-4 border-[#39FF14] pl-6">
+            <div>
+              <h2 class="text-4xl font-black italic uppercase tracking-tighter">Admin Panel</h2>
+              <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Owned tournaments</p>
+            </div>
+            <button data-action="openCreateTournament" class="px-6 py-3 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
+              ${Icon("plus","w-4 h-4 inline-block -mt-0.5 mr-2")}Create
+            </button>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            ${owned.map(t => `
+              <div class="rounded-[2rem] border border-white/10 bg-[#0a0a0a] p-8 shadow-2xl flex items-center justify-between">
+                <div>
+                  <div class="text-xl font-black italic uppercase tracking-tighter">${esc(t.name)}</div>
+                  <div class="mt-1 text-[10px] font-black uppercase tracking-[0.35em] text-slate-600">${esc(t.status||"")}</div>
+                </div>
+                <button data-action="enterTournament" data-value="${esc(t.id)}" class="px-6 py-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 font-black uppercase tracking-widest text-[10px] hover:border-[#39FF14]/30">
+                  Manage
+                </button>
+              </div>
+            `).join("")}
+          </div>
+
+          ${!owned.length ? `
+            <div class="py-20 text-center text-slate-600 font-black uppercase tracking-widest text-[10px]">
+              No owned tournaments. Create one.
+            </div>` : ""}
+        </div>
+      `;
+    }
+
+    /* =========================
+       TOURNAMENT TABS
+    ========================= */
+    function TabHome(t) {
+      const registered = isRegistered(t);
+      const fee = t.type === "Paid" ? `INR ${Number(t.entryFee||0)}` : "FREE";
+      const full = (Number(t.playerCount||0) >= Number(t.maxPlayers||0));
+
+      return `
+        <div class="space-y-10">
+          ${SponsorBannerUI(t)}
+
+          <div class="rounded-[3rem] border border-white/10 bg-[#0a0a0a] p-10 md:p-14 shadow-2xl relative overflow-hidden">
+            <div class="absolute -top-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full"></div>
+            <div class="relative z-10 space-y-6">
+              <div class="flex flex-wrap gap-2">
+                <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">${esc(t.format||"League")}</span>
+                <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">${esc(t.mode||"Normal")}</span>
+                <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-[#39FF14]/30 text-[#39FF14] bg-[#39FF14]/5">${esc(t.status||"")}</span>
+              </div>
+
+              <h1 class="text-4xl md:text-6xl font-black italic uppercase tracking-tighter leading-none">${esc(t.name||"Tournament")}</h1>
+
+              <div class="flex flex-wrap gap-4">
+                ${Stat("Players", `${Number(t.playerCount||0)} / ${Number(t.maxPlayers||0)}`)}
+                ${Stat("Entry", fee)}
+                ${t.deadline ? Stat("Registration Closes", fmtDT(t.deadline)) : ""}
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
+            ${!registered ? JoinPanel(t, full) : `
+              <div class="rounded-2xl px-8 py-6 text-center font-black uppercase tracking-[0.35em] text-[10px] bg-[#39FF14]/10 border border-[#39FF14]/30 text-[#39FF14]">
+                Registry confirmed (pending approval may apply)
+              </div>
+            `}
+          </div>
+
+          <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
+            <div class="border-l-4 border-[#39FF14] pl-6 mb-6">
+              <h2 class="text-2xl font-black italic uppercase tracking-tighter">Tournament Rules</h2>
+              <p class="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mt-2">Mandatory compliance</p>
+            </div>
+            <pre class="whitespace-pre-wrap text-slate-300 font-bold leading-relaxed">${esc(t.rules || "No rules defined yet.")}</pre>
+          </div>
+        </div>
+      `;
+    }
+
+    function JoinPanel(t, full) {
+      if (t.status !== "Registration Open") {
+        return `<div class="rounded-2xl px-8 py-6 text-center font-black uppercase tracking-[0.35em] text-[10px] bg-white/5 border border-white/10 text-slate-500">Registration closed</div>`;
+      }
+      if (full) {
+        return `<div class="rounded-2xl px-8 py-6 text-center font-black uppercase tracking-[0.35em] text-[10px] bg-white/5 border border-white/10 text-slate-500">Tournament full</div>`;
+      }
+      if (!profileComplete()) {
+        return `
+          <div class="rounded-[2rem] border border-orange-500/20 bg-orange-500/5 p-8 text-center space-y-4">
+            <div class="text-orange-400 font-black uppercase tracking-[0.35em] text-[10px]">Profile incomplete</div>
+            <div class="text-slate-400 font-bold">Complete your profile to join tournaments.</div>
+            <button data-action="gotoProfile" class="px-10 py-4 rounded-2xl bg-white text-black font-black uppercase tracking-widest text-[10px]">
+              Complete Profile
+            </button>
+          </div>
+        `;
+      }
+      return `
+        <div class="text-center space-y-5">
+          <div class="text-slate-400 font-bold">You are not registered in this tournament.</div>
+          <button data-action="joinTournament" class="px-12 py-6 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-[0.35em] text-[11px] shadow-[0_0_35px_rgba(57,255,20,0.25)] hover:scale-[1.02] transition-transform">
+            Join ${t.type==="Paid" ? `(INR ${Number(t.entryFee||0)})` : ""}
+          </button>
+          ${t.type==="Paid" ? `<div class="text-[10px] font-black uppercase tracking-widest text-slate-600">Payment UTR will be collected before join request</div>` : ""}
+        </div>
+      `;
+    }
+
+    function Stat(label, value) {
+      return `
+        <div class="rounded-xl border border-white/10 bg-white/5 px-6 py-4">
+          <div class="text-[9px] font-black uppercase tracking-widest text-slate-500">${esc(label)}</div>
+          <div class="text-lg font-black uppercase tracking-tight text-white">${esc(value)}</div>
+        </div>
+      `;
+    }
+
+    function TabPlayers(t) {
+      const mode = t.mode || "Normal";
+      const list = state.participants;
+
+      return `
+        <div class="space-y-8">
+          <div class="border-l-4 border-[#39FF14] pl-6">
+            <h2 class="text-3xl font-black italic uppercase tracking-tighter">Players</h2>
+            <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Tournament roster</p>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            ${list.map(p => {
+              const online = !!state.presence?.[p.userId];
+              const strikes = Number(p.disputeStrikes || 0);
+              const acc = (Number(p.accuracyTotal||0) > 0) ? Math.round((Number(p.accuracyConfirmed||0) / Number(p.accuracyTotal||0)) * 100) : 100;
+              return `
+                <div class="rounded-[2rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl hover:border-[#39FF14]/30 transition-all">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <div class="font-black uppercase text-white">${esc(p.playerName || "Player")}</div>
+                      <div class="mt-1 flex items-center gap-2">
+                        <span class="${cn("w-2 h-2 rounded-full", online ? "bg-[#39FF14] shadow-[0_0_10px_#39FF14]" : "bg-slate-600")}"></span>
+                        <span class="text-[9px] font-black uppercase tracking-widest text-slate-500">${online ? "Online" : "Offline"}</span>
+                      </div>
+                      <div class="mt-2 text-[9px] font-black uppercase tracking-widest text-slate-600">Status: <span class="${p.status==="approved"?"text-[#39FF14]":p.status==="pending"?"text-orange-400":"text-slate-400"}">${esc(p.status||"pending")}</span></div>
+                    </div>
+
+                    <div class="text-right">
+                      <div class="text-[9px] font-black uppercase tracking-widest text-slate-600">Accuracy</div>
+                      <div class="text-lg font-black italic ${acc>=70?"text-[#39FF14]":"text-orange-400"}">${acc}%</div>
+                    </div>
+                  </div>
+
+                  <div class="mt-5 pt-5 border-t border-white/10 flex items-center justify-between">
+                    <div class="text-[9px] font-black uppercase tracking-widest text-slate-600">Strikes</div>
+                    <div class="${cn("text-sm font-black uppercase", strikes>=3 ? "text-red-400" : "text-slate-200")}">${strikes}/3</div>
+                  </div>
+
+                  ${mode==="Authentic" ? `
+                    <div class="mt-4 text-[10px] font-black uppercase tracking-widest text-slate-600">
+                      Assigned Team: <span class="text-slate-200">${esc(p.assignedTeam || "Pending")}</span>
+                    </div>
+                  ` : ""}
+                </div>
+              `;
+            }).join("")}
+          </div>
+
+          ${!list.length ? `<div class="py-20 text-center text-slate-600 font-black uppercase tracking-widest text-[10px]">No players joined yet</div>` : ""}
+        </div>
+      `;
+    }
+
+    function TabStandings(t) {
+      const rows = computeStandings();
+      return `
+        <div class="space-y-8 print:bg-white print:text-black">
+          <div class="flex items-end justify-between border-l-4 border-[#39FF14] pl-6 print-hidden">
+            <div>
+              <h2 class="text-3xl font-black italic uppercase tracking-tighter">Standings</h2>
+              <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Live table</p>
+            </div>
+            <button data-action="print" class="px-6 py-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 font-black uppercase tracking-widest text-[10px] hover:bg-[#39FF14] hover:text-black transition-all">
+              ${Icon("download","w-4 h-4 inline-block -mt-0.5 mr-2")}Export PDF
+            </button>
+          </div>
+
+          <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] shadow-2xl overflow-hidden print-card">
+            <table class="w-full text-left border-collapse print-table">
+              <thead>
+                <tr class="bg-white/5 text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 border-b border-white/10">
+                  <th class="p-6">Pos</th>
+                  <th class="p-6">Player</th>
+                  <th class="p-6 text-center">P</th>
+                  <th class="p-6 text-center">W</th>
+                  <th class="p-6 text-center">D</th>
+                  <th class="p-6 text-center">L</th>
+                  <th class="p-6 text-center">GF</th>
+                  <th class="p-6 text-center">GA</th>
+                  <th class="p-6 text-center">GD</th>
+                  <th class="p-6 text-center text-[#39FF14]">PTS</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.map((r,i) => `
+                  <tr class="border-b border-white/10 hover:bg-white/[0.03]">
+                    <td class="p-6 font-black italic text-2xl text-[#39FF14]">${i+1}</td>
+                    <td class="p-6 font-black uppercase italic text-white text-lg">${esc(r.name)}</td>
+                    <td class="p-6 text-center font-black text-slate-200">${r.p}</td>
+                    <td class="p-6 text-center font-black text-slate-200">${r.w}</td>
+                    <td class="p-6 text-center font-black text-slate-200">${r.d}</td>
+                    <td class="p-6 text-center font-black text-slate-200">${r.l}</td>
+                    <td class="p-6 text-center font-black text-slate-200">${r.gf}</td>
+                    <td class="p-6 text-center font-black text-slate-200">${r.ga}</td>
+                    <td class="p-6 text-center font-black text-slate-200">${r.gd>0?`+${r.gd}`:r.gd}</td>
+                    <td class="p-6 text-center font-black italic text-white text-2xl">${r.pts}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
+    function TabFixtures(t) {
+      const uid = state.user.uid;
+      const list = state.matches;
+
+      return `
+        <div class="space-y-8">
+          <div class="border-l-4 border-[#39FF14] pl-6">
+            <h2 class="text-3xl font-black italic uppercase tracking-tighter">Fixtures</h2>
+            <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Match schedule</p>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            ${list.map(m => {
+              const mine = (m.playerAId===uid || m.playerBId===uid);
+              const readyA = !!m.readyA;
+              const readyB = !!m.readyB;
+              const status = m.status || "pending";
+
+              return `
+                <div class="${cn(
+                  "rounded-[2rem] border bg-[#0a0a0a] p-6 shadow-2xl cursor-pointer hover:border-[#39FF14]/30 transition-all relative overflow-hidden",
+                  mine ? "border-[#39FF14]/35" : "border-white/10"
+                )}" data-action="openMatch" data-value="${esc(m.id)}">
+                  <div class="absolute -top-24 -right-24 w-64 h-64 bg-[#39FF14]/10 blur-3xl rounded-full opacity-60"></div>
+
+                  <div class="relative z-10">
+                    <div class="flex items-center justify-between">
+                      <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400 bg-white/5">${esc(m.roundName || "League Match")}</span>
+                      <span class="${cn(
+                        "px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border",
+                        status==="confirmed" ? "border-[#39FF14]/30 text-[#39FF14] bg-[#39FF14]/5" :
+                        status==="disputed" ? "border-red-500/30 text-red-400 bg-red-500/5" :
+                        status==="pending_confirmation" ? "border-orange-500/30 text-orange-300 bg-orange-500/5" :
+                        "border-white/10 text-slate-500 bg-white/5"
+                      )}">
+                        ${esc(status.replaceAll("_"," "))}
+                      </span>
+                    </div>
+
+                    <div class="mt-6 grid grid-cols-3 items-center text-center">
+                      <div class="space-y-2">
+                        <div class="font-black uppercase italic text-white truncate">${esc(m.playerAName||"P1")}</div>
+                        <div class="${cn("w-2 h-2 rounded-full mx-auto", readyA ? "bg-[#39FF14] shadow-[0_0_10px_#39FF14]" : "bg-slate-700")}"></div>
+                      </div>
+
+                      <div class="text-4xl font-black italic text-white tracking-tighter">
+                        ${status==="pending" ? "VS" : `${Number(m.score?.a||0)}:${Number(m.score?.b||0)}`}
+                      </div>
+
+                      <div class="space-y-2">
+                        <div class="font-black uppercase italic text-white truncate">${esc(m.playerBName||"P2")}</div>
+                        <div class="${cn("w-2 h-2 rounded-full mx-auto", readyB ? "bg-[#39FF14] shadow-[0_0_10px_#39FF14]" : "bg-slate-700")}"></div>
+                      </div>
+                    </div>
+
+                    ${mine ? `<div class="mt-5 text-[9px] font-black uppercase tracking-widest text-[#39FF14]">Your matchup</div>` : ""}
+                  </div>
+                </div>
+              `;
+            }).join("")}
+          </div>
+
+          ${!list.length ? `<div class="py-20 text-center text-slate-600 font-black uppercase tracking-widest text-[10px]">No fixtures yet</div>` : ""}
+        </div>
+      `;
+    }
+
+    function TabBracket(t) {
+      // basic bracket from matches with roundName not "Matchday X" (if knockout exists later)
+      const knockout = state.matches.filter(m => m.roundName && !String(m.roundName).startsWith("Matchday"));
+      if (!knockout.length) {
+        return `
+          <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-10 shadow-2xl">
+            <div class="border-l-4 border-[#39FF14] pl-6">
+              <h2 class="text-3xl font-black italic uppercase tracking-tighter">Bracket</h2>
+              <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Knockout view</p>
+            </div>
+            <div class="mt-10 text-slate-600 font-black uppercase tracking-widest text-[10px]">
+              No knockout rounds available (League tournaments may not have bracket).
+            </div>
+          </div>
+        `;
+      }
+
+      const grouped = {};
+      for (const m of knockout) {
+        grouped[m.roundName] = grouped[m.roundName] || [];
+        grouped[m.roundName].push(m);
+      }
+      const rounds = Object.keys(grouped);
+
+      return `
+        <div class="space-y-8">
+          <div class="flex items-end justify-between border-l-4 border-[#39FF14] pl-6 print-hidden">
+            <div>
+              <h2 class="text-3xl font-black italic uppercase tracking-tighter">Bracket</h2>
+              <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Knockout view</p>
+            </div>
+            <button data-action="print" class="px-6 py-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 font-black uppercase tracking-widest text-[10px] hover:bg-[#39FF14] hover:text-black transition-all">
+              ${Icon("download","w-4 h-4 inline-block -mt-0.5 mr-2")}Export PDF
+            </button>
+          </div>
+
+          <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl overflow-x-auto no-scrollbar print-card">
+            <div class="flex gap-10 min-w-max">
+              ${rounds.map(rn => `
+                <div class="w-[320px] space-y-4">
+                  <div class="text-center text-[10px] font-black uppercase tracking-[0.5em] text-[#39FF14]">${esc(rn)}</div>
+                  <div class="space-y-4">
+                    ${grouped[rn].map(m => `
+                      <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+                        <div class="flex items-center justify-between">
+                          <div class="${cn("font-black uppercase italic truncate", (m.status==="confirmed" && Number(m.score?.a||0) > Number(m.score?.b||0)) ? "text-[#39FF14]" : "text-white")}">${esc(m.playerAName)}</div>
+                          <div class="font-black italic text-lg text-white">${m.status==="confirmed" ? Number(m.score?.a||0) : "-"}</div>
+                        </div>
+                        <div class="mt-3 pt-3 border-t border-white/10 flex items-center justify-between">
+                          <div class="${cn("font-black uppercase italic truncate", (m.status==="confirmed" && Number(m.score?.b||0) > Number(m.score?.a||0)) ? "text-[#39FF14]" : "text-white")}">${esc(m.playerBName)}</div>
+                          <div class="font-black italic text-lg text-white">${m.status==="confirmed" ? Number(m.score?.b||0) : "-"}</div>
+                        </div>
+                      </div>
+                    `).join("")}
+                  </div>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function TabAnnouncements(t) {
+      const admin = isAdmin(t);
+      const list = state.announcements;
+
+      return `
+        <div class="space-y-8">
+          <div class="flex items-end justify-between border-l-4 border-[#39FF14] pl-6">
+            <div>
+              <h2 class="text-3xl font-black italic uppercase tracking-tighter">Announcements</h2>
+              <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Tournament broadcasts</p>
+            </div>
+          </div>
+
+          ${admin ? `
+            <div class="rounded-[2rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl space-y-3">
+              <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">Post announcement</div>
+              <textarea id="annDraft" rows="3" class="w-full bg-black border border-white/10 rounded-xl p-4 text-slate-200 font-bold outline-none focus:border-[#39FF14]" placeholder="Write announcement..."></textarea>
+              <button data-action="postAnnouncement" class="px-8 py-3 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
+                Publish
+              </button>
+            </div>
+          ` : ""}
+
+          <div class="space-y-4">
+            ${list.map(a => `
+              <div class="rounded-[2rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl">
+                <div class="flex items-start gap-4">
+                  <div class="w-10 h-10 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-[#39FF14]">
+                    ${Icon("megaphone","w-5 h-5")}
+                  </div>
+                  <div class="flex-1">
+                    <div class="text-slate-200 font-bold leading-relaxed">${esc(a.content)}</div>
+                    <div class="mt-3 text-[9px] font-black uppercase tracking-widest text-slate-600">
+                      ${esc(fmtDT(a.createdAt || 0))}${a.type==="system" ? " • SYSTEM" : ""}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `).join("")}
+
+            ${!list.length ? `<div class="py-20 text-center text-slate-600 font-black uppercase tracking-widest text-[10px]">No announcements yet</div>` : ""}
+          </div>
+        </div>
+      `;
+    }
+
+    function TabSupport(t) {
+      const admin = isAdmin(t);
+      const tickets = state.supportTickets;
+      const activeId = state.uiSupportActiveId || (tickets.length ? tickets[0].id : null);
+      const active = tickets.find(x => x.id === activeId) || null;
+
+      // store chosen
+      state.uiSupportActiveId = activeId;
+
+      return `
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div class="rounded-[2rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl overflow-y-auto no-scrollbar h-[620px]">
+            <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-white/10 pb-4">Support Channels</div>
+            <div class="mt-4 space-y-3">
+              ${tickets.map(x => {
+                const last = (x.messages && x.messages.length) ? x.messages[x.messages.length-1] : null;
+                const title = admin ? (x.userName || "Player") : "My Ticket";
+                return `
+                  <div data-action="openTicket" data-value="${esc(x.id)}"
+                       class="${cn(
+                        "p-4 rounded-2xl border cursor-pointer transition-all",
+                        x.id===activeId ? "bg-[#39FF14]/10 border-[#39FF14]/30" : "bg-white/5 border-white/10 hover:border-white/20"
+                      )}">
+                    <div class="font-black uppercase italic text-white">${esc(title)}</div>
+                    <div class="mt-1 text-[9px] font-black uppercase tracking-widest text-slate-600 truncate">${esc(last?.text || "No messages")}</div>
+                  </div>
+                `;
+              }).join("")}
+
+              ${!tickets.length ? `<div class="py-14 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">No support tickets</div>` : ""}
+            </div>
+          </div>
+
+          <div class="lg:col-span-2 rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl h-[620px] flex flex-col">
+            ${active ? `
+              <div class="flex items-center justify-between border-b border-white/10 pb-4">
+                <div>
+                  <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">Active Ticket</div>
+                  <div class="text-lg font-black uppercase italic">${esc(admin ? (active.userName || "Player") : "My Support")}</div>
+                </div>
+                <div class="text-[9px] font-black uppercase tracking-widest text-slate-600">Updated: ${esc(fmtDT(active.lastUpdated||0))}</div>
+              </div>
+
+              <div class="flex-1 overflow-y-auto no-scrollbar py-5 space-y-3">
+                ${(active.messages||[]).map(m => {
+                  const mine = m.senderId === state.user.uid;
+                  return `
+                    <div class="${cn("flex", mine ? "justify-end" : "justify-start")}">
+                      <div class="${cn("max-w-[80%] p-4 rounded-2xl text-sm font-bold leading-relaxed", mine ? "bg-[#39FF14] text-black rounded-tr-none" : "bg-white/5 text-slate-100 rounded-tl-none border border-white/10")}">
+                        ${esc(m.text)}
+                        <div class="${cn("mt-2 text-[9px] font-black uppercase tracking-widest opacity-70", mine ? "text-black" : "text-slate-400")}">
+                          ${esc(m.senderName)} • ${esc(fmtDT(m.createdAt||0))}
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join("")}
+              </div>
+
+              <div class="pt-4 border-t border-white/10 flex gap-3">
+                <input id="supportMsg" class="flex-1 bg-black border border-white/10 rounded-xl px-5 py-4 text-sm font-bold text-slate-200 outline-none focus:border-[#39FF14]" placeholder="Type message..." />
+                <button data-action="sendSupport" data-value="${esc(active.id)}" class="px-6 py-4 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
+                  ${Icon("chat","w-4 h-4 inline-block -mt-0.5 mr-2")}Send
+                </button>
+              </div>
+            ` : `
+              <div class="h-full flex items-center justify-center text-slate-700 font-black uppercase tracking-[0.5em] text-[10px]">
+                Select a ticket
+              </div>
+              <div class="pt-4 border-t border-white/10 flex gap-3">
+                <input id="supportMsg" class="flex-1 bg-black border border-white/10 rounded-xl px-5 py-4 text-sm font-bold text-slate-200 outline-none focus:border-[#39FF14]" placeholder="Start support message..." />
+                <button data-action="sendSupport" data-value="" class="px-6 py-4 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
+                  ${Icon("chat","w-4 h-4 inline-block -mt-0.5 mr-2")}Create
+                </button>
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    function TabAdmin(t) {
+      if (!isAdmin(t)) {
+        return `<div class="py-24 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">Admin access only</div>`;
+      }
+
+      const adminSub = state.uiAdminTab || "Participants";
+      const subTabs = ["Participants","Fixtures","Announcements","Permissions","Disputes"];
+
+      return `
+        <div class="space-y-8">
+          <div class="border-l-4 border-[#39FF14] pl-6">
+            <h2 class="text-3xl font-black italic uppercase tracking-tighter">Admin</h2>
+            <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Tournament controls</p>
+          </div>
+
+          <div class="rounded-2xl border border-white/10 bg-white/5 p-2 print-hidden">
+            <div class="flex overflow-x-auto no-scrollbar gap-2">
+              ${subTabs.map(x => `
+                <button data-action="setAdminTab" data-value="${esc(x)}"
+                  class="${cn(
+                    "px-5 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all whitespace-nowrap",
+                    adminSub===x ? "bg-[#39FF14] text-black border-[#39FF14]" : "bg-black/60 text-slate-400 border-white/10 hover:text-slate-200"
+                  )}">${esc(x)}</button>
+              `).join("")}
+            </div>
+          </div>
+
+          <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
+            ${adminSub==="Participants" ? AdminParticipantsUI(t) : ""}
+            ${adminSub==="Fixtures" ? AdminFixturesUI(t) : ""}
+            ${adminSub==="Announcements" ? AdminAnnouncementsUI(t) : ""}
+            ${adminSub==="Permissions" ? AdminPermissionsUI(t) : ""}
+            ${adminSub==="Disputes" ? AdminDisputesUI(t) : ""}
+          </div>
+        </div>
+      `;
+    }
+
+    function AdminParticipantsUI(t) {
+      const list = state.participants;
+      return `
+        <div class="space-y-6">
+          <div class="text-xl font-black italic uppercase tracking-tighter">Registry Management</div>
+          <div class="space-y-3">
+            ${list.map(p => `
+              <div class="rounded-[2rem] border border-white/10 bg-white/5 p-6 flex items-center justify-between">
+                <div>
+                  <div class="font-black uppercase italic text-white text-lg">${esc(p.playerName || "Player")}</div>
+                  <div class="mt-1 text-[9px] font-black uppercase tracking-widest text-slate-600">
+                    Status: <span class="${p.status==="approved"?"text-[#39FF14]":p.status==="pending"?"text-orange-400":"text-slate-300"}">${esc(p.status||"pending")}</span>
+                    ${p.utr ? ` • UTR: <span class="text-slate-200">${esc(p.utr)}</span>` : ""}
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  ${p.status==="pending" ? `
+                    <button data-action="approveParticipant" data-value="${esc(p.id)}"
+                      class="px-5 py-3 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
+                      ${Icon("check","w-4 h-4 inline-block -mt-0.5 mr-2")}Approve
+                    </button>
+                  ` : `
+                    <div class="px-4 py-3 rounded-xl border border-white/10 bg-black/60 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      Approved
+                    </div>
+                  `}
+                </div>
+              </div>
+            `).join("")}
+
+            ${!list.length ? `<div class="py-16 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">No participants</div>` : ""}
+          </div>
+        </div>
+      `;
+    }
+
+    function AdminFixturesUI(t) {
+      const hasMatches = state.matches.length > 0;
+      return `
+        <div class="text-center space-y-6">
+          <div class="text-3xl font-black italic uppercase tracking-tighter">Matrix Generator</div>
+          <div class="text-slate-500 font-black uppercase tracking-[0.4em] text-[10px]">
+            League Round-Robin (Circle Method)
+          </div>
+
+          <div class="mx-auto max-w-xl text-slate-400 font-bold">
+            Generates all Matchdays automatically using approved players.
+            <span class="text-[#39FF14]"> One-time action</span> (blocked if matches already exist).
+          </div>
+
+          <button data-action="generateFixtures"
+            class="${cn(
+              "mx-auto px-12 py-5 rounded-[2rem] font-black uppercase tracking-[0.35em] text-[11px] transition-all",
+              hasMatches ? "bg-white/10 text-slate-600 border border-white/10 cursor-not-allowed" : "bg-[#39FF14] text-black hover:scale-[1.02]"
+            )}">
+            ${hasMatches ? "Already Generated" : "Generate Fixtures"}
+          </button>
+        </div>
+      `;
+    }
+
+    function AdminAnnouncementsUI(t) {
+      return `
+        <div class="space-y-4">
+          <div class="text-xl font-black italic uppercase tracking-tighter">Broadcast Node</div>
+          <textarea id="annDraftAdmin" rows="4" class="w-full bg-black border border-white/10 rounded-2xl p-5 text-slate-200 font-bold outline-none focus:border-[#39FF14]" placeholder="Write announcement..."></textarea>
+          <button data-action="postAnnouncementAdmin" class="w-full px-8 py-4 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
+            Publish
+          </button>
+        </div>
+      `;
+    }
+
+    function AdminPermissionsUI(t) {
+      const owner = (t.ownerId === state.user.uid);
+      const admins = Array.isArray(t.adminIds) ? t.adminIds : [];
+
+      return `
+        <div class="space-y-6">
+          <div class="text-xl font-black italic uppercase tracking-tighter">Admin Authority</div>
+          <div class="text-slate-500 font-black uppercase tracking-[0.35em] text-[10px]">
+            Owner can grant or remove admin UIDs
+          </div>
+
+          ${owner ? `
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-5 flex gap-3">
+              <input id="newAdminUid" class="flex-1 bg-black border border-white/10 rounded-xl px-5 py-4 text-sm font-bold text-slate-200 outline-none focus:border-[#39FF14]" placeholder="User UID..." />
+              <button data-action="addAdminUid" class="px-8 py-4 rounded-xl bg-white text-black font-black uppercase tracking-widest text-[10px] hover:bg-[#39FF14]">
+                Grant
+              </button>
+            </div>
+
+            <div class="space-y-3">
+              ${admins.map(uid => `
+                <div class="rounded-2xl border border-white/10 bg-white/5 p-5 flex items-center justify-between">
+                  <div class="text-slate-200 font-black uppercase tracking-widest text-[10px] truncate">${esc(uid)}</div>
+                  <button data-action="removeAdminUid" data-value="${esc(uid)}" class="px-5 py-3 rounded-xl bg-red-500/10 text-red-300 border border-red-500/20 font-black uppercase tracking-widest text-[10px] hover:bg-red-500 hover:text-white">
+                    Remove
+                  </button>
+                </div>
+              `).join("")}
+
+              ${!admins.length ? `<div class="py-12 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">No admins yet</div>` : ""}
+            </div>
+          ` : `
+            <div class="py-20 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">
+              Owner access only
+            </div>
+          `}
+        </div>
+      `;
+    }
+
+    function AdminDisputesUI(t) {
+      const disputed = state.matches.filter(m => m.status === "disputed");
+      return `
+        <div class="space-y-6">
+          <div class="text-xl font-black italic uppercase tracking-tighter">Dispute Center</div>
+
+          <div class="space-y-3">
+            ${disputed.map(m => `
+              <div class="rounded-[2rem] border border-red-500/20 bg-red-500/5 p-6 flex items-center justify-between">
+                <div>
+                  <div class="font-black uppercase italic text-white">${esc(m.playerAName)} vs ${esc(m.playerBName)}</div>
+                  <div class="mt-1 text-[9px] font-black uppercase tracking-widest text-red-300">
+                    Awaiting admin resolution • Disputer: ${esc(m.disputerId || "—")}
+                  </div>
+                </div>
+                <button data-action="resolveDispute" data-value="${esc(m.id)}"
+                        class="px-6 py-3 rounded-xl border border-white/10 bg-white/5 text-slate-100 font-black uppercase tracking-widest text-[10px] hover:bg-[#39FF14] hover:text-black">
+                  Resolve
+                </button>
+              </div>
+            `).join("")}
+
+            ${!disputed.length ? `<div class="py-16 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">No active disputes</div>` : ""}
+          </div>
+        </div>
+      `;
+    }
+
+    /* =========================
+       MODALS
+    ========================= */
+    function CreateTournamentModal() {
+      const loading = state.loadingAction;
+      return `
+        <div class="fixed inset-0 z-[120] bg-black/90 backdrop-blur-xl flex items-center justify-center p-4 print-hidden">
+          <div class="w-full max-w-2xl rounded-[2.5rem] border border-[#39FF14]/20 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl relative overflow-hidden">
+            <div class="absolute top-0 left-0 w-full h-1.5 bg-[#39FF14]"></div>
+
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h3 class="text-2xl font-black italic uppercase tracking-tighter">Create Tournament</h3>
+                <p class="text-[10px] font-black uppercase tracking-widest text-slate-500 mt-2">League / Knockout / Group+Knockout</p>
+              </div>
+              <button data-action="closeCreateTournament" class="p-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 hover:border-[#39FF14]/30">
+                ${Icon("x","w-4 h-4")}
+              </button>
+            </div>
+
+            <div class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+              ${Input("t_name","Tournament Name","", "Asia Masters Cup")}
+              ${Input("t_game","Game","eFootball","eFootball")}
+              ${Select("t_format","Format","League",["League","Knockout","Group + Knockout"])}
+              ${Select("t_mode","Mode","Normal",["Normal","Authentic"])}
+              ${Input("t_max","Max Players","16","16")}
+              ${Input("t_deadline","Registration Deadline (ms or ISO)","", "Paste ISO like 2026-01-25T18:00")}
+              ${Select("t_type","Type","Free",["Free","Paid"])}
+              ${Input("t_fee","Entry Fee (INR)","0","0")}
+              ${Input("t_upi","UPI for Payments (Organizer)","", "upi@bank")}
+            </div>
+
+            <div class="mt-4">
+              <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">Rules</div>
+              <textarea id="form_t_rules" rows="4" class="w-full bg-black border border-white/10 rounded-2xl p-5 text-slate-200 font-bold outline-none focus:border-[#39FF14]"
+                placeholder="1. Professional conduct required&#10;2. Manual score reporting mandatory&#10;3. Respect tournament officials"></textarea>
+            </div>
+
+            <div class="mt-4">
+              <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">Sponsors (optional)</div>
+              <textarea id="form_t_sponsors" rows="2" class="w-full bg-black border border-white/10 rounded-2xl p-5 text-slate-200 font-bold outline-none focus:border-[#39FF14]"
+                placeholder='One per line. Example:&#10;BrandX | https://brandx.com | "Official Partner"'></textarea>
+              <div class="mt-2 text-[9px] font-black uppercase tracking-widest text-slate-600">
+                Format: <span class="text-slate-300">Name | Link | Tagline</span> (link/tagline optional)
+              </div>
+            </div>
+
+            <div class="mt-6 flex gap-3">
+              <button data-action="closeCreateTournament" class="flex-1 px-8 py-4 rounded-2xl border border-white/10 bg-white/5 text-slate-200 font-black uppercase tracking-widest text-[10px]">
+                Cancel
+              </button>
+              <button data-action="createTournament" class="${cn(
+                "flex-[2] px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all",
+                loading ? "bg-white/10 text-slate-600 border border-white/10 cursor-not-allowed" : "bg-[#39FF14] text-black hover:scale-[1.01]"
+              )}">
+                ${loading ? "Creating..." : "Create"}
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function PaymentModal(t) {
+  const loading = state.loadingAction;
+  const fee = Number(t.entryFee || 0);
+  const upi = t.upi || "";
+
+  return `
+    <div class="fixed inset-0 z-[120] bg-black/90 backdrop-blur-xl flex items-center justify-center p-4 print-hidden">
+      <div class="w-full max-w-lg rounded-[2.5rem] border border-[#39FF14]/20 bg-[#0a0a0a] p-10 shadow-2xl relative overflow-hidden">
+        <div class="absolute top-0 left-0 w-full h-1.5 bg-[#39FF14]"></div>
+
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h3 class="text-2xl font-black italic uppercase tracking-tighter">Payment Required</h3>
+            <p class="text-[10px] font-black uppercase tracking-widest text-slate-500 mt-2">
+              Pay via UPI or QR, then enter UTR
+            </p>
+          </div>
+          <button data-action="closePayment"
+            class="p-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 hover:border-[#39FF14]/30">
+            ${Icon("x","w-4 h-4")}
+          </button>
+        </div>
+
+        <div class="mt-6 space-y-4">
+
+          <!-- UPI ID -->
+          <div class="rounded-2xl border border-white/10 bg-white/5 p-5 text-center">
+            <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">
+              Pay To (Organizer UPI)
+            </div>
+            <div class="mt-2 text-lg font-black uppercase tracking-tight text-white">
+              ${esc(upi || "Not set")}
+            </div>
+          </div>
+
+          <!-- AMOUNT -->
+          <div class="rounded-2xl border border-white/10 bg-white/5 p-5 text-center">
+            <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">Amount</div>
+            <div class="mt-2 text-3xl font-black italic text-[#39FF14]">
+              INR ${fee}
+            </div>
+          </div>
+
+          <!-- QR CODE -->
+          <div class="rounded-2xl border border-white/10 bg-black p-5 flex flex-col items-center gap-4">
+  <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">
+    Scan QR to Pay
+  </div>
+
+  <div id="upiQrBox"
+       class="bg-white p-3 rounded-xl w-[200px] h-[200px] flex items-center justify-center">
+    <span class="text-black text-xs font-bold">Loading QR…</span>
+  </div>
+
+  <!-- OR PAY VIA APP -->
+  <a id="upiDeepLink"
+     class="w-full mt-3 px-6 py-4 rounded-xl bg-[#39FF14] text-black
+            font-black uppercase tracking-widest text-[10px] text-center">
+    Pay via UPI App
+  </a>
+
+  <div class="text-[9px] font-black uppercase tracking-widest text-slate-600 text-center">
+    Works with GPay • PhonePe • Paytm
+  </div>
+</div>
+
+          <!-- UTR INPUT -->
+          <div class="space-y-2">
+            <div class="text-[10px] font-black uppercase tracking-[0.25em] text-slate-500">
+              UTR / Reference
+            </div>
+            <input id="utrInput"
+              placeholder="Enter UTR after payment"
+              class="w-full bg-black border border-white/10 rounded-xl px-5 py-4
+                     text-sm font-bold text-slate-200 outline-none focus:border-[#39FF14]" />
+          </div>
+
+          <!-- CONFIRM -->
+          <button data-action="confirmPaymentJoin"
+            class="${cn(
+              "w-full px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all",
+              loading
+                ? "bg-white/10 text-slate-600 border border-white/10 cursor-not-allowed"
+                : "bg-[#39FF14] text-black"
+            )}">
+            ${loading ? "Processing..." : "Confirm & Join"}
+          </button>
+
+          <div class="text-[9px] font-black uppercase tracking-widest text-slate-600 text-center">
+            Admin will approve after verifying payment
+          </div>
+
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+    function MatchCenterModal(match) {
+      if (!match) return "";
+      const uid = state.user.uid;
+      const isA = match.playerAId === uid;
+      const isB = match.playerBId === uid;
+      const isParticipant = isA || isB;
+
+      const myReady = isA ? !!match.readyA : !!match.readyB;
+      const otherReady = isA ? !!match.readyB : !!match.readyA;
+
+      const status = match.status || "pending";
+      const canSubmit = isParticipant && status === "pending" && myReady && otherReady;
+      const needsConfirm = isParticipant && status === "pending_confirmation" && match.submittedBy !== uid;
+
+      return `
+        <div class="fixed inset-0 z-[140] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4 print-hidden">
+          <div class="w-full max-w-2xl rounded-[2.8rem] border border-[#39FF14]/20 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl relative overflow-hidden">
+            <div class="absolute -top-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full"></div>
+
+            <button data-action="closeMatch" class="absolute top-6 right-6 p-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 hover:border-[#39FF14]/30">
+              ${Icon("x","w-4 h-4")}
+            </button>
+
+            <div class="relative z-10 space-y-6">
+              <div class="text-center space-y-2">
+                <div class="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-white/10 bg-white/5 text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                  ${Icon("shield","w-4 h-4 text-[#39FF14]")} Match Center
+                </div>
+                <div class="text-2xl md:text-3xl font-black italic uppercase tracking-tighter">
+                  ${esc(match.playerAName)} <span class="text-slate-700 mx-2">vs</span> ${esc(match.playerBName)}
+                </div>
+                <div class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-600">
+                  Status: ${esc(status.replaceAll("_"," "))}
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                ${MatchSide(match.playerAName, !!match.readyA, isA)}
+                ${MatchSide(match.playerBName, !!match.readyB, isB)}
+              </div>
+
+              ${isParticipant && status === "pending" ? `
+                <button data-action="toggleReady" data-value="${esc(match.id)}"
+                  class="${cn(
+                    "w-full px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all",
+                    myReady ? "bg-white/5 border border-[#39FF14]/30 text-[#39FF14]" : "bg-[#39FF14] text-black"
+                  )}">
+                  ${myReady ? "Ready confirmed" : "Confirm ready"}
+                </button>
+              ` : ""}
+
+              ${canSubmit ? `
+                <div class="rounded-[2rem] border border-white/10 bg-black p-6 space-y-4">
+                  <div class="text-center text-[10px] font-black uppercase tracking-widest text-slate-500">Submit final score</div>
+
+                  <div class="flex items-center justify-center gap-3">
+                    <input id="scoreA" type="number" min="0" value="${Number(match.score?.a||0)}"
+                      class="w-24 bg-[#0a0a0a] border border-white/10 rounded-2xl p-5 text-3xl font-black italic text-center outline-none focus:border-[#39FF14]" />
+                    <div class="text-slate-700 font-black text-2xl">:</div>
+                    <input id="scoreB" type="number" min="0" value="${Number(match.score?.b||0)}"
+                      class="w-24 bg-[#0a0a0a] border border-white/10 rounded-2xl p-5 text-3xl font-black italic text-center outline-none focus:border-[#39FF14]" />
+                  </div>
+
+                  <button data-action="submitScore" data-value="${esc(match.id)}"
+                    class="w-full px-8 py-4 rounded-2xl bg-white text-black font-black uppercase tracking-widest text-[10px] hover:bg-[#39FF14] transition-all">
+                    Submit
+                  </button>
+                </div>
+              ` : ""}
+
+              ${needsConfirm ? `
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <button data-action="confirmScore" data-value="${esc(match.id)}"
+                    class="px-8 py-4 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
+                    ${Icon("check","w-4 h-4 inline-block -mt-0.5 mr-2")}Confirm
+                  </button>
+                  <button data-action="disputeScore" data-value="${esc(match.id)}"
+                    class="px-8 py-4 rounded-2xl bg-red-600 text-white font-black uppercase tracking-widest text-[10px]">
+                    ${Icon("shield","w-4 h-4 inline-block -mt-0.5 mr-2")}Dispute
+                  </button>
+                </div>
+              ` : ""}
+
+              ${(!isParticipant) ? `
+                <div class="rounded-2xl border border-white/10 bg-white/5 p-5 text-center text-slate-500 font-black uppercase tracking-widest text-[10px]">
+                  You are not part of this match
+                </div>
+              ` : ""}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function MatchSide(name, ready, isMe) {
+      return `
+        <div class="${cn(
+          "rounded-[2rem] border p-6 text-center space-y-2",
+          ready ? "border-[#39FF14]/25 bg-[#39FF14]/5" : "border-white/10 bg-white/5"
+        )}">
+          <div class="${cn("font-black uppercase italic text-sm", isMe ? "text-[#39FF14]" : "text-slate-300")}">
+            ${esc(name)} ${isMe ? "(You)" : ""}
+          </div>
+          <div class="flex items-center justify-center gap-2">
+            <span class="${cn("w-2 h-2 rounded-full", ready ? "bg-[#39FF14] shadow-[0_0_10px_#39FF14]" : "bg-slate-700")}"></span>
+            <span class="${cn("text-[9px] font-black uppercase tracking-widest", ready ? "text-[#39FF14]" : "text-slate-500")}">
+              ${ready ? "Locked in" : "Waiting"}
+            </span>
+          </div>
+        </div>
+      `;
+    }
+
+
+function renderPaymentQR(t) {
+  const qrBox = document.getElementById("upiQrBox");
+  const upiBtn = document.getElementById("upiDeepLink");
+
+  if (!qrBox || !upiBtn || !t?.upi || !t?.entryFee) return;
+
+  // Clear box
+  qrBox.innerHTML = "";
+
+  const upiUrl =
+    `upi://pay?pa=${encodeURIComponent(t.upi)}` +
+    `&pn=${encodeURIComponent(t.organizerName || "Organizer")}` +
+    `&am=${encodeURIComponent(t.entryFee)}` +
+    `&cu=INR`;
+
+  // 🔹 QR CODE
+  if (window.QRCode) {
+    new QRCode(qrBox, {
+      text: upiUrl,
+      width: 180,
+      height: 180,
+      colorDark: "#000000",
+      colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.H
+    });
+  } else {
+    qrBox.innerHTML = `<span class="text-black text-xs font-bold">QR failed</span>`;
+  }
+
+  // 🔹 UPI DEEP LINK (opens app)
+  upiBtn.href = upiUrl;
+}
+
+
+    /* =========================
+       10) APP ROOT RENDER
+    ========================= */
+    function render() {
+      // Booting
+      if (state.booting) {
+        $app.innerHTML = `
+          <div class="min-h-screen bg-[#050505] text-slate-100 flex flex-col items-center justify-center gap-6">
+            <div class="w-12 h-12 rounded-full border-2 border-white/10 border-t-[#39FF14] animate-spin"></div>
+            <div class="text-[11px] font-black uppercase tracking-[0.5em] text-slate-600">Syncing…</div>
+          </div>
+        `;
+        return;
+      }
+
+      // Anonymous → Landing only (NO DATA)
+      if (!isLoggedIn()) {
+        $app.innerHTML = `
+          ${PublicLanding()}
+          ${state.authModalOpen ? AuthModal() : ""}
+          ${ToastUI()}
+        `;
+        bindActions();
+if (state.showPaymentModal) {
+  setTimeout(() => renderPaymentQR(t), 0);
+}
+
+        return;
+      }
+
+      // Logged in
+      const t = activeTournament();
+
+      // Tournament view
+      if (t) {
+        let inner = "";
+        switch (state.tournamentTab) {
+          case "Home": inner = TabHome(t); break;
+          case "Players": inner = TabPlayers(t); break;
+          case "Standings": inner = TabStandings(t); break;
+          case "Fixtures": inner = TabFixtures(t); break;
+          case "Bracket": inner = TabBracket(t); break;
+          case "Announcements": inner = TabAnnouncements(t); break;
+          case "Support": inner = TabSupport(t); break;
+          case "Admin": inner = TabAdmin(t); break;
+          default: inner = TabHome(t);
+        }
+
+        $app.innerHTML = `
+          ${TournamentLayout(t, inner)}
+          ${state.showPaymentModal ? PaymentModal(t) : ""}
+          ${state.uiMatchModal ? MatchCenterModal(state.matches.find(x => x.id === state.uiMatchModal) || null) : ""}
+          ${state.showCreateTournament ? CreateTournamentModal() : ""}
+        `;
+        bindActions();
+        return;
+      }
+
+      // Global view
+      let content = "";
+      if (state.globalTab === "Browse Tournaments") content = PageBrowseTournaments();
+      else if (state.globalTab === "My Tournaments") content = PageMyTournaments();
+      else if (state.globalTab === "Profile") content = PageProfile();
+      else if (state.globalTab === "Admin Panel") content = PageAdminPanel();
+      else content = PageBrowseTournaments();
+
+      $app.innerHTML = `
+        ${GlobalLayout(`
+          <div class="flex items-center justify-between gap-3 mb-8 print-hidden">
+            ${ChipTabs(GLOBAL_TABS, state.globalTab, "setGlobalTab")}
+          </div>
+
+          ${content}
+        `)}
+        ${state.authModalOpen ? AuthModal() : ""}
+        ${state.showCreateTournament ? CreateTournamentModal() : ""}
+      `;
+      bindActions();
+    }
+
+    /* =========================
+       11) ACTION BINDINGS
+    ========================= */
+    function bindActions() {
+      // generic
+      document.querySelectorAll("[data-action]").forEach(el => {
+        el.onclick = async (e) => {
+          const action = el.getAttribute("data-action");
+          const value = el.getAttribute("data-value");
+
+          try {
+            if (action === "openAuth") { state.authModalOpen = true; render(); }
+            if (action === "closeAuth") { state.authModalOpen = false; render(); }
+
+            if (action === "doLogin") {
+              const email = document.getElementById("loginEmail")?.value || "";
+              const pass = document.getElementById("loginPass")?.value || "";
+              await authLogin(email.trim(), pass);
+            }
+
+            if (action === "doSignup") {
+              const name = document.getElementById("signupName")?.value || "";
+              const email = document.getElementById("signupEmail")?.value || "";
+              const pass = document.getElementById("signupPass")?.value || "";
+              await authSignup(name.trim(), email.trim(), pass);
+            }
+
+            if (action === "logout") await doLogout();
+
+            if (action === "setGlobalTab") { state.globalTab = value; render(); }
+
+            if (action === "enterTournament") { enterTournament(value); }
+
+            if (action === "exitTournament") { exitTournament(); }
+
+            if (action === "setTournamentTab") { state.tournamentTab = value; render(); }
+
+            if (action === "openProfileEdit") { state.showProfileEdit = true; render(); }
+            if (action === "closeProfileEdit") { state.showProfileEdit = false; render(); }
+
+            if (action === "saveProfile") {
+              const form = {
+                playerName: document.getElementById("form_playerName")?.value?.trim() || "",
+                gameName: document.getElementById("form_gameName")?.value?.trim() || "",
+                mobile: document.getElementById("form_mobile")?.value?.trim() || "",
+                gameId: document.getElementById("form_gameId")?.value?.trim() || "",
+                upiId: document.getElementById("form_upiId")?.value?.trim() || "",
+                platform: document.getElementById("form_platform")?.value || "Mobile",
+                region: document.getElementById("form_region")?.value || "South Asia"
+              };
+              await saveProfile(form);
+            }
+
+            if (action === "gotoProfile") {
+              state.globalTab = "Profile";
+              state.showProfileEdit = true;
+              exitTournament();
+              render();
+            }
+
+            if (action === "openCreateTournament") { state.showCreateTournament = true; render(); }
+            if (action === "closeCreateTournament") { state.showCreateTournament = false; render(); }
+
+            if (action === "createTournament") {
+              const name = document.getElementById("form_t_name")?.value?.trim() || "";
+              const game = document.getElementById("form_t_game")?.value?.trim() || "eFootball";
+              const format = document.getElementById("form_t_format")?.value || "League";
+              const mode = document.getElementById("form_t_mode")?.value || "Normal";
+              const maxPlayers = Number(document.getElementById("form_t_max")?.value || 16);
+              const type = document.getElementById("form_t_type")?.value || "Free";
+              const entryFee = Number(document.getElementById("form_t_fee")?.value || 0);
+              const upi = document.getElementById("form_t_upi")?.value?.trim() || "";
+              const rules = document.getElementById("form_t_rules")?.value || "";
+              const dlRaw = document.getElementById("form_t_deadline")?.value?.trim() || "";
+
+              let deadline = null;
+              // accept ISO or ms
+              if (dlRaw) {
+                const ms = Number(dlRaw);
+                if (!Number.isNaN(ms) && ms > 1000000000) deadline = ms;
+                else {
+                  const dt = new Date(dlRaw);
+                  if (!Number.isNaN(dt.getTime())) deadline = dt.getTime();
+                }
+              }
+
+              const sponsorsRaw = document.getElementById("form_t_sponsors")?.value || "";
+              const sponsors = sponsorsRaw.split("\n").map(x => x.trim()).filter(Boolean).map(line => {
+                const parts = line.split("|").map(p => p.trim()).filter(Boolean);
+                if (parts.length === 0) return null;
+                if (parts.length === 1) return parts[0];
+                return { name: parts[0], link: parts[1] || "", tagline: parts[2] || "" };
+              }).filter(Boolean);
+
+              if (!name) { toast("Tournament name required"); return; }
+              if (!deadline) { toast("Deadline required"); return; }
+
+              await createTournament({
+                name, game, format, mode, maxPlayers, deadline,
+                type,
+                entryFee: type==="Paid" ? entryFee : 0,
+                upi: type==="Paid" ? upi : "",
+                rules,
+                visibility: "Public",
+                spectators: true,
+                sponsors,
+                sponsorConfig: { rotateMs: 4500 }
+              });
+            }
+
+            if (action === "joinTournament") {
+              const t = activeTournament();
+              await requestJoinTournament(t);
+            }
+
+            if (action === "closePayment") { state.showPaymentModal = false; render(); }
+
+            if (action === "confirmPaymentJoin") {
+              const t = activeTournament();
+              const utr = document.getElementById("utrInput")?.value?.trim() || "";
+              if (!utr) { toast("UTR required"); return; }
+              await finalizeJoin(t, utr);
+            }
+
+            if (action === "setAdminTab") { state.uiAdminTab = value; render(); }
+
+            if (action === "approveParticipant") {
+              const t = activeTournament();
+              await approveParticipant(value, t.id);
+            }
+
+            if (action === "generateFixtures") {
+              const t = activeTournament();
+              await generateLeagueFixtures(t);
+            }
+
+            if (action === "postAnnouncement") {
+              const t = activeTournament();
+              const content = document.getElementById("annDraft")?.value || "";
+              await postAnnouncement(t.id, content, "manual");
+              if (document.getElementById("annDraft")) document.getElementById("annDraft").value = "";
+            }
+
+            if (action === "postAnnouncementAdmin") {
+              const t = activeTournament();
+              const content = document.getElementById("annDraftAdmin")?.value || "";
+              await postAnnouncement(t.id, content, "manual");
+              if (document.getElementById("annDraftAdmin")) document.getElementById("annDraftAdmin").value = "";
+            }
+
+            if (action === "addAdminUid") {
+              const t = activeTournament();
+              const uid = document.getElementById("newAdminUid")?.value?.trim() || "";
+              if (!uid) { toast("UID required"); return; }
+              await setAdminUid(t.id, uid, true);
+              document.getElementById("newAdminUid").value = "";
+            }
+
+            if (action === "removeAdminUid") {
+              const t = activeTournament();
+              await setAdminUid(t.id, value, false);
+            }
+
+            if (action === "resolveDispute") {
+              await adminResolveDispute(value, "a");
+            }
+
+            if (action === "openMatch") {
+              state.uiMatchModal = value;
+              render();
+            }
+
+            if (action === "closeMatch") {
+              state.uiMatchModal = null;
+              render();
+            }
+
+            if (action === "toggleReady") {
+              const m = state.matches.find(x => x.id === value);
+              await toggleReady(m);
+            }
+
+            if (action === "submitScore") {
+              const m = state.matches.find(x => x.id === value);
+              const a = Number(document.getElementById("scoreA")?.value || 0);
+              const b = Number(document.getElementById("scoreB")?.value || 0);
+              await submitScore(m, a, b);
+            }
+
+            if (action === "confirmScore") {
+              const m = state.matches.find(x => x.id === value);
+              await confirmScore(m);
+            }
+
+            if (action === "disputeScore") {
+              const m = state.matches.find(x => x.id === value);
+              await disputeScore(m);
+            }
+
+            if (action === "openTicket") {
+              state.uiSupportActiveId = value;
+              render();
+            }
+
+            if (action === "sendSupport") {
+              const t = activeTournament();
+              const msg = document.getElementById("supportMsg")?.value || "";
+              const ticketId = value || null;
+              await sendSupportMessage(t.id, msg, ticketId);
+              if (document.getElementById("supportMsg")) document.getElementById("supportMsg").value = "";
+            }
+
+            if (action === "print") window.print();
+
+          } catch (err) {
+            toast(err?.message || "Action failed");
+          }
+        };
+      });
+    }
+
+    // Initial render
+    render();
+
+    // Safety: if activeTournament changes while logged in, resubscribe
+    // (handled inside enterTournament / exitTournament)
+
+  </script>
+</body>
+</html>
