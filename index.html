@@ -274,13 +274,18 @@ const firebaseConfig = {
       );
 
       // Announcements
-      subs.announcements = onSnapshot(
-        query(collection(db, "announcements"), where("tournamentId", "==", tournamentId)),
-        (snap) => {
-          state.announcements = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (b.createdAt||0)-(a.createdAt||0));
-          render();
-        }
-      );
+     subs.announcements = onSnapshot(
+  query(
+    collection(db, "tournaments", tournamentId, "announcements"),
+    orderBy("createdAt", "desc")
+  ),
+  (snap) => {
+    state.announcements = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    render();
+  },
+  (e) => { console.error(e); render(); }
+);
+
 
       // Support tickets (array messages)
       subs.support = onSnapshot(
@@ -474,65 +479,85 @@ const firebaseConfig = {
 
       // paid flow
       if (t.type === "Paid" && Number(t.entryFee||0) > 0) {
-        state.showPaymentModal = true;
-        state.paymentUTR = "";
-        render();
-        return;
-      }
+  state.showPaymentModal = true;
+  state.paymentUTR = "";
+
+  // ⏱️ 10-minute payment window
+  state.paymentExpiresAt = Date.now() + (5 * 60 * 1000);
+  state.paymentSessionId = crypto.randomUUID();
+
+  render();
+  return;
+}
+
 
       await finalizeJoin(t, null);
     }
 
-    async function finalizeJoin(t, utr) {
-      if (!state.user || !t) return;
-      state.loadingAction = true; render();
-      try {
-        // prevent double join
-        if (isRegistered(t)) {
-          state.showPaymentModal = false;
-          toast("Already registered");
-          return;
-        }
+  async function finalizeJoin(t, utr) {
+  if (!state.user || !t) return;
 
-        const p = state.profile || {};
-        await addDoc(collection(db, "participants"), {
-          tournamentId: t.id,
-          userId: state.user.uid,
-          playerName: p.playerName || (state.user.displayName || "Player"),
-          gameName: p.gameName || "",
-          mobile: p.mobile || "",
-          gameId: p.gameId || "",
-          upiId: p.upiId || "",
-          platform: p.platform || "Mobile",
-          region: p.region || "South Asia",
+  // 🔒 Prevent expired payment
+  if (Date.now() > state.paymentExpiresAt) {
+    toast("Payment expired. Please retry.");
+    return;
+  }
 
-          status: "pending",
-          createdAt: now(),
-          utr: utr || null,
-          paid: (t.type === "Paid"),
-          disputeStrikes: 0,
-          accuracyConfirmed: 0,
-          accuracyTotal: 0,
-          assignedTeam: null
-        });
+  // 🔐 STRICT UTR VALIDATION (12–22 digits only)
+  if (!/^\d{12,22}$/.test(utr)) {
+    toast("Invalid UTR format");
+    return;
+  }
 
-        await updateDoc(doc(db, "tournaments", t.id), {
-          participants: arrayUnion(state.user.uid)
-        });
+  state.loadingAction = true;
+  render();
 
-        state.showPaymentModal = false;
-        toast("Join requested (pending approval)");
-      } catch (e) {
-        toast(e?.message || "Join failed");
-      } finally {
-        state.loadingAction = false; render();
-      }
+  try {
+    // prevent double join
+    if (isRegistered(t)) {
+      toast("Already registered");
+      return;
     }
+
+    const p = state.profile || {};
+
+    await addDoc(collection(db, "participants"), {
+      tournamentId: t.id,
+      userId: state.user.uid,
+      playerName: p.playerName || state.user.displayName || "Player",
+      gameName: p.gameName || "",
+      platform: p.platform || "Mobile",
+
+      status: "pending",              // ⏳ WAITING ADMIN
+      paid: true,
+      utr: utr,
+      verified: false,
+
+      createdAt: now()
+    });
+
+    toast("Payment submitted. Awaiting admin approval.");
+    state.showPaymentModal = false;
+
+  } catch (e) {
+    toast("Join failed");
+  } finally {
+    state.loadingAction = false;
+    render();
+  }
+}
+
+
 
     async function approveParticipant(participantId, tournamentId) {
       state.loadingAction = true; render();
       try {
-        await updateDoc(doc(db, "participants", participantId), { status: "approved", approvedAt: now() });
+       await updateDoc(doc(db, "participants", participantId), {
+  status: "approved",
+  paymentStatus: "PAID",
+  approvedAt: now()
+});
+
         await updateDoc(doc(db, "tournaments", tournamentId), { playerCount: increment(1) });
         toast("Approved");
       } catch (e) {
@@ -558,23 +583,29 @@ const firebaseConfig = {
     }
 
     async function postAnnouncement(tid, content, type="manual") {
-      if (!tid || !content.trim()) return;
-      state.loadingAction = true; render();
-      try {
-        await addDoc(collection(db, "announcements"), {
-          tournamentId: tid,
-          content: content.trim(),
-          createdAt: now(),
-          createdBy: state.user.uid,
-          type
-        });
-        toast("Announcement sent");
-      } catch (e) {
-        toast(e?.message || "Announcement failed");
-      } finally {
-        state.loadingAction = false; render();
+  if (!tid || !content.trim() || !state.user) return;
+
+  state.loadingAction = true; render();
+  try {
+    await addDoc(
+      collection(db, "tournaments", tid, "announcements"),
+      {
+        content: content.trim(),
+        type,
+        createdAt: serverTimestamp(),
+        createdBy: state.user.uid,
+        createdByName: state.user.displayName || state.profile?.playerName || "Organizer"
       }
-    }
+    );
+    toast("Announcement sent");
+  } catch (e) {
+    console.error(e);
+    toast(e?.message || "Announcement failed");
+  } finally {
+    state.loadingAction = false; render();
+  }
+}
+
 
     /* =========================
        Fixtures + Match Center
@@ -763,33 +794,41 @@ const firebaseConfig = {
     /* =========================
        Support Chat
     ========================= */
-    async function sendSupportMessage(tid, text, ticketId=null) {
-      if (!tid || !text.trim()) return;
-      state.loadingAction = true; render();
-      try {
-        const msg = { senderId: state.user.uid, senderName: state.user.displayName || (state.profile?.playerName||"Player"), text: text.trim(), createdAt: now() };
+    async function sendSupportMessage(tid, text) {
+  if (!tid || !text.trim() || !state.user) return;
 
-        if (ticketId) {
-          await updateDoc(doc(db, "support", ticketId), {
-            messages: arrayUnion(msg),
-            lastUpdated: now()
-          });
-        } else {
-          await addDoc(collection(db, "support"), {
-            tournamentId: tid,
-            userId: state.user.uid,
-            userName: state.user.displayName || (state.profile?.playerName||"Player"),
-            messages: [msg],
-            lastUpdated: now()
-          });
-        }
-        toast("Sent");
-      } catch (e) {
-        toast(e?.message || "Support failed");
-      } finally {
-        state.loadingAction = false; render();
+  state.loadingAction = true; 
+  render();
+
+  try {
+    const threadId = `${tid}_${state.user.uid}`;
+    const isAdmin = state.isManager === true;
+
+    await addDoc(
+      collection(db, "support_threads", threadId, "messages"),
+      {
+        text: text.trim(),
+        fromUid: state.user.uid,
+        fromRole: isAdmin ? "admin" : "player",
+        fromName:
+          state.user.displayName ||
+          state.profile?.playerName ||
+          (isAdmin ? "Admin" : "Player"),
+        createdAt: serverTimestamp()
       }
-    }
+    );
+
+    toast("Message sent");
+  } catch (e) {
+    console.error(e);
+    toast(e?.message || "Support failed");
+  } finally {
+    state.loadingAction = false;
+    render();
+  }
+}
+
+
 
     /* =========================
        7) STANDINGS (computed)
@@ -1369,6 +1408,39 @@ const firebaseConfig = {
         </div>
       `;
     }
+function subscribePlayerSupport(tid) {
+  if (!state.user) return;
+
+  const threadId = `${tid}_${state.user.uid}`;
+
+  return onSnapshot(
+    query(
+      collection(db, "support_threads", threadId, "messages"),
+      orderBy("createdAt", "asc")
+    ),
+    snap => {
+      state.supportMessages = snap.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      }));
+      render();
+    }
+  );
+}
+
+function subscribeAdminSupportThreads(tid) {
+  if (!state.isManager) return;
+
+  return onSnapshot(
+    query(collection(db, "support_threads")),
+    snap => {
+      state.supportThreads = snap.docs
+        .map(d => ({ id: d.id }))
+        .filter(t => t.id.startsWith(tid + "_"));
+      render();
+    }
+  );
+}
 
     /* =========================
        TOURNAMENT TABS
@@ -1460,7 +1532,8 @@ const firebaseConfig = {
 
     function TabPlayers(t) {
       const mode = t.mode || "Normal";
-      const list = state.participants;
+      const list = state.participants.filter(p => p.status === "approved");
+
 
       return `
         <div class="space-y-8">
@@ -1478,7 +1551,18 @@ const firebaseConfig = {
                 <div class="rounded-[2rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl hover:border-[#39FF14]/30 transition-all">
                   <div class="flex items-center justify-between">
                     <div>
-                      <div class="font-black uppercase text-white">${esc(p.playerName || "Player")}</div>
+                      <div class="flex items-center gap-2 font-black uppercase text-white">
+  <span>${esc(p.playerName || "Player")}</span>
+
+  ${p.paymentStatus === "PAID" ? `
+    <span class="px-2 py-1 rounded-full text-[8px]
+      font-black uppercase tracking-widest
+      bg-[#39FF14]/20 text-[#39FF14]">
+      PAID
+    </span>
+  ` : ""}
+</div>
+
                       <div class="mt-1 flex items-center gap-2">
                         <span class="${cn("w-2 h-2 rounded-full", online ? "bg-[#39FF14] shadow-[0_0_10px_#39FF14]" : "bg-slate-600")}"></span>
                         <span class="text-[9px] font-black uppercase tracking-widest text-slate-500">${online ? "Online" : "Offline"}</span>
@@ -1860,40 +1944,86 @@ const firebaseConfig = {
     }
 
     function AdminParticipantsUI(t) {
-      const list = state.participants;
-      return `
-        <div class="space-y-6">
-          <div class="text-xl font-black italic uppercase tracking-tighter">Registry Management</div>
-          <div class="space-y-3">
-            ${list.map(p => `
-              <div class="rounded-[2rem] border border-white/10 bg-white/5 p-6 flex items-center justify-between">
-                <div>
-                  <div class="font-black uppercase italic text-white text-lg">${esc(p.playerName || "Player")}</div>
-                  <div class="mt-1 text-[9px] font-black uppercase tracking-widest text-slate-600">
-                    Status: <span class="${p.status==="approved"?"text-[#39FF14]":p.status==="pending"?"text-orange-400":"text-slate-300"}">${esc(p.status||"pending")}</span>
-                    ${p.utr ? ` • UTR: <span class="text-slate-200">${esc(p.utr)}</span>` : ""}
-                  </div>
-                </div>
-                <div class="flex items-center gap-2">
-                  ${p.status==="pending" ? `
-                    <button data-action="approveParticipant" data-value="${esc(p.id)}"
-                      class="px-5 py-3 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
-                      ${Icon("check","w-4 h-4 inline-block -mt-0.5 mr-2")}Approve
+  const list = state.participants;
+
+  return `
+    <div class="space-y-6">
+      <div class="text-xl font-black italic uppercase tracking-tighter">
+        Registry Management
+      </div>
+
+      <div class="space-y-3">
+        ${list.map(p => `
+          <div class="rounded-[2rem] border border-white/10 bg-white/5 p-6 flex items-center justify-between">
+            <div>
+              <div class="font-black uppercase italic text-white text-lg">
+                ${esc(p.playerName || "Player")}
+              </div>
+
+              <div class="mt-1 text-[9px] font-black uppercase tracking-widest text-slate-600">
+                Status:
+                <span class="${
+                  p.status === "approved"
+                    ? "text-[#39FF14]"
+                    : p.status === "pending"
+                    ? "text-orange-400"
+                    : "text-red-400"
+                }">
+                  ${esc(p.status || "pending")}
+                </span>
+                ${p.utr ? ` • UTR: <span class="text-slate-200">${esc(p.utr)}</span>` : ""}
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2">
+              ${
+                p.status === "pending"
+                  ? `
+                    <button
+                      data-action="approveParticipant"
+                      data-value="${esc(p.id)}"
+                      class="px-5 py-3 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]"
+                    >
+                      ${Icon("check","w-4 h-4 inline-block -mt-0.5 mr-2")}
+                      Approve
                     </button>
-                  ` : `
-                    <div class="px-4 py-3 rounded-xl border border-white/10 bg-black/60 text-[10px] font-black uppercase tracking-widest text-slate-500">
+
+                    <button
+                      data-action="rejectParticipant"
+                      data-value="${esc(p.id)}"
+                      class="px-5 py-3 rounded-xl bg-red-500/20 text-red-400 border border-red-500/30 font-black uppercase tracking-widest text-[10px]"
+                    >
+                      Reject
+                    </button>
+                  `
+                  : p.status === "approved"
+                  ? `
+                    <div class="px-4 py-3 rounded-xl border border-white/10 bg-black/60 text-[10px] font-black uppercase tracking-widest text-[#39FF14]">
                       Approved
                     </div>
-                  `}
-                </div>
-              </div>
-            `).join("")}
-
-            ${!list.length ? `<div class="py-16 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">No participants</div>` : ""}
+                  `
+                  : `
+                    <div class="px-4 py-3 rounded-xl border border-red-500/30 bg-red-500/10 text-[10px] font-black uppercase tracking-widest text-red-400">
+                      Rejected
+                    </div>
+                  `
+              }
+            </div>
           </div>
-        </div>
-      `;
-    }
+        `).join("")}
+
+        ${
+          !list.length
+            ? `<div class="py-16 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">
+                No participants
+              </div>`
+            : ""
+        }
+      </div>
+    </div>
+  `;
+}
+
 
     function AdminFixturesUI(t) {
       const hasMatches = state.matches.length > 0;
@@ -2063,103 +2193,143 @@ const firebaseConfig = {
       `;
     }
 
-    function PaymentModal(t) {
+  function PaymentModal(t) {
   const loading = state.loadingAction;
   const fee = Number(t.entryFee || 0);
-  const upi = t.upi || "";
+
+  /* =========================
+     FIXED 5 MIN PAYMENT TIMER
+  ========================= */
+  if (!state.paymentExpiresAt) {
+    state.paymentExpiresAt = Date.now() + 5 * 60 * 1000; // ⏱️ 5 MIN FIXED
+  }
+
+  const remainingMs = Math.max(0, state.paymentExpiresAt - Date.now());
+  const expired = remainingMs <= 0;
+
+  const mm = String(Math.floor(remainingMs / 60000)).padStart(2, "0");
+  const ss = String(Math.floor((remainingMs % 60000) / 1000)).padStart(2, "0");
+
+  /* =========================
+     UPI LINK + QR
+  ========================= */
+  const upiUrl =
+    `upi://pay?pa=${encodeURIComponent(t.upi)}` +
+    `&pn=${encodeURIComponent("Tournament Organizer")}` +
+    `&am=${fee}&cu=INR&tn=Tournament Entry`;
+
+  const qrImg =
+    "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=" +
+    encodeURIComponent(upiUrl);
 
   return `
-    <div class="fixed inset-0 z-[120] bg-black/90 backdrop-blur-xl flex items-center justify-center p-4 print-hidden">
-      <div class="w-full max-w-lg rounded-[2.5rem] border border-[#39FF14]/20 bg-[#0a0a0a] p-10 shadow-2xl relative overflow-hidden">
-        <div class="absolute top-0 left-0 w-full h-1.5 bg-[#39FF14]"></div>
+  <div class="fixed inset-0 z-[120] bg-black/90 backdrop-blur-xl flex items-center justify-center p-4">
+    <div class="w-full max-w-lg rounded-[2.5rem] border border-[#39FF14]/20 bg-[#0a0a0a] p-10 shadow-2xl">
 
-        <div class="flex items-start justify-between gap-4">
-          <div>
-            <h3 class="text-2xl font-black italic uppercase tracking-tighter">Payment Required</h3>
-            <p class="text-[10px] font-black uppercase tracking-widest text-slate-500 mt-2">
-              Pay via UPI or QR, then enter UTR
-            </p>
-          </div>
-          <button data-action="closePayment"
-            class="p-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 hover:border-[#39FF14]/30">
-            ${Icon("x","w-4 h-4")}
-          </button>
+      <!-- HEADER -->
+      <div class="flex justify-between items-start">
+        <div>
+          <h3 class="text-2xl font-black italic uppercase">Payment Required</h3>
+          <p class="text-[10px] font-black uppercase tracking-widest text-slate-500 mt-2">
+            Complete payment within 5 minutes
+          </p>
         </div>
+        <button data-action="closePayment"
+          class="p-3 rounded-xl border border-white/10 bg-white/5 text-slate-200">
+          ✕
+        </button>
+      </div>
 
-        <div class="mt-6 space-y-4">
-
-          <!-- UPI ID -->
-          <div class="rounded-2xl border border-white/10 bg-white/5 p-5 text-center">
-            <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">
-              Pay To (Organizer UPI)
-            </div>
-            <div class="mt-2 text-lg font-black uppercase tracking-tight text-white">
-              ${esc(upi || "Not set")}
-            </div>
-          </div>
-
-          <!-- AMOUNT -->
-          <div class="rounded-2xl border border-white/10 bg-white/5 p-5 text-center">
-            <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">Amount</div>
-            <div class="mt-2 text-3xl font-black italic text-[#39FF14]">
-              INR ${fee}
-            </div>
-          </div>
-
-          <!-- QR CODE -->
-          <div class="rounded-2xl border border-white/10 bg-black p-5 flex flex-col items-center gap-4">
-  <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">
-    Scan QR to Pay
-  </div>
-
-  <div id="upiQrBox"
-       class="bg-white p-3 rounded-xl w-[200px] h-[200px] flex items-center justify-center">
-    <span class="text-black text-xs font-bold">Loading QR…</span>
-  </div>
-
-  <!-- OR PAY VIA APP -->
-  <a id="upiDeepLink"
-     class="w-full mt-3 px-6 py-4 rounded-xl bg-[#39FF14] text-black
-            font-black uppercase tracking-widest text-[10px] text-center">
-    Pay via UPI App
-  </a>
-
-  <div class="text-[9px] font-black uppercase tracking-widest text-slate-600 text-center">
-    Works with GPay • PhonePe • Paytm
-  </div>
-</div>
-
-          <!-- UTR INPUT -->
-          <div class="space-y-2">
-            <div class="text-[10px] font-black uppercase tracking-[0.25em] text-slate-500">
-              UTR / Reference
-            </div>
-            <input id="utrInput"
-              placeholder="Enter UTR after payment"
-              class="w-full bg-black border border-white/10 rounded-xl px-5 py-4
-                     text-sm font-bold text-slate-200 outline-none focus:border-[#39FF14]" />
-          </div>
-
-          <!-- CONFIRM -->
-          <button data-action="confirmPaymentJoin"
-            class="${cn(
-              "w-full px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all",
-              loading
-                ? "bg-white/10 text-slate-600 border border-white/10 cursor-not-allowed"
-                : "bg-[#39FF14] text-black"
-            )}">
-            ${loading ? "Processing..." : "Confirm & Join"}
-          </button>
-
-          <div class="text-[9px] font-black uppercase tracking-widest text-slate-600 text-center">
-            Admin will approve after verifying payment
-          </div>
-
+      <!-- TIMER -->
+      <div class="mt-4 text-center">
+        <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">
+          Time Remaining
+        </div>
+        <div class="mt-1 text-3xl font-black ${
+          expired ? "text-red-500" : "text-[#39FF14]"
+        }">
+          ${expired ? "EXPIRED" : `${mm}:${ss}`}
         </div>
       </div>
+
+      <div class="mt-6 space-y-5 ${expired ? "opacity-40 pointer-events-none" : ""}">
+
+        <!-- PAY TO -->
+        <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+          <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">
+            Pay To (Organizer UPI)
+          </div>
+          <div class="mt-2 text-lg font-black uppercase text-white">
+            ${esc(t.upi || "NOT SET")}
+          </div>
+          <button data-action="copyUpi"
+            class="mt-2 text-[10px] font-black uppercase tracking-widest text-[#39FF14]">
+            COPY UPI ID
+          </button>
+        </div>
+
+        <!-- AMOUNT -->
+        <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+          <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">
+            Amount
+          </div>
+          <div class="mt-2 text-3xl font-black italic text-[#39FF14]">
+            INR ${fee}
+          </div>
+        </div>
+
+        <!-- QR -->
+        <div class="rounded-2xl border border-white/10 bg-black p-6 text-center">
+          <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">
+            Scan QR to Pay
+          </div>
+          <img src="${qrImg}" class="mx-auto rounded-xl" />
+          <div class="mt-3 text-[9px] font-black uppercase tracking-widest text-slate-600">
+            GPay • PhonePe • Paytm
+          </div>
+        </div>
+
+        <!-- OPEN UPI APP -->
+        <button data-action="openUPI"
+          class="w-full px-8 py-4 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
+          PAY VIA UPI APP
+        </button>
+
+        <!-- UTR -->
+        <div>
+          <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">
+            UTR / Reference
+          </div>
+          <input id="utrInput"
+            placeholder="12–22 digit UTR"
+            value="${esc(state.paymentUTR || "")}"
+            class="w-full mt-2 bg-black border border-white/10 rounded-xl px-5 py-4
+                   text-sm font-bold text-slate-200 outline-none focus:border-[#39FF14]" />
+        </div>
+
+        <!-- CONFIRM -->
+        <button data-action="confirmPaymentJoin"
+          class="w-full px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px]
+            ${loading ? "bg-white/10 text-slate-600 cursor-not-allowed"
+                      : "bg-[#39FF14] text-black"}">
+          ${loading ? "Processing..." : "Confirm & Join"}
+        </button>
+      </div>
+
+      ${
+        expired
+          ? `<div class="mt-6 text-center text-red-500 text-[10px] font-black uppercase tracking-widest">
+               Payment expired. Reopen Join to retry.
+             </div>`
+          : ""
+      }
+
     </div>
+  </div>
   `;
 }
+
+
 
     function MatchCenterModal(match) {
       if (!match) return "";
@@ -2504,14 +2674,31 @@ if (state.showPaymentModal) {
               await requestJoinTournament(t);
             }
 
-            if (action === "closePayment") { state.showPaymentModal = false; render(); }
+            if (action === "closePayment") {
+  state.showPaymentModal = false;
+  state.paymentUTR = "";
+  state.paymentExpiresAt = null;
+  render();
+}
+
 
             if (action === "confirmPaymentJoin") {
-              const t = activeTournament();
-              const utr = document.getElementById("utrInput")?.value?.trim() || "";
-              if (!utr) { toast("UTR required"); return; }
-              await finalizeJoin(t, utr);
-            }
+  const t = activeTournament();
+
+  // ⛔ Payment expired
+  if (!state.paymentExpiresAt || Date.now() > state.paymentExpiresAt) {
+    toast("Payment session expired. Please reopen payment.");
+    state.showPaymentModal = false;
+    render();
+    return;
+  }
+
+  const utr = document.getElementById("utrInput")?.value?.trim() || "";
+  if (!utr) { toast("UTR required"); return; }
+
+  await finalizeJoin(t, utr);
+}
+
 
             if (action === "setAdminTab") { state.uiAdminTab = value; render(); }
 
@@ -2606,6 +2793,41 @@ if (state.showPaymentModal) {
           } catch (err) {
             toast(err?.message || "Action failed");
           }
+if (action === "copyUpi") {
+  const t = activeTournament();
+  if (!t?.upi) return toast("UPI not available");
+
+  navigator.clipboard.writeText(t.upi)
+    .then(() => toast("UPI ID copied"))
+    .catch(() => toast("Copy failed"));
+}
+
+if (action === "openUPI") {
+  const t = activeTournament();
+  if (!t?.upi || !t?.entryFee) {
+    toast("UPI not configured");
+    return;
+  }
+
+if (action === "rejectParticipant") {
+  await updateDoc(doc(db, "participants", value), {
+    status: "rejected",
+    paymentStatus: "REJECTED",
+    rejectedAt: now()
+  });
+  toast("Payment rejected");
+}
+
+
+  const upiUrl =
+    `upi://pay?pa=${encodeURIComponent(t.upi)}` +
+    `&pn=${encodeURIComponent(t.organizerName || "Organizer")}` +
+    `&am=${encodeURIComponent(t.entryFee)}` +
+    `&cu=INR&tn=Tournament Entry`;
+
+  window.location.href = upiUrl;
+}
+
         };
       });
     }
