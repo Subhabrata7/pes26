@@ -289,17 +289,25 @@ const firebaseConfig = {
 
       // Support tickets (array messages)
       subs.support = onSnapshot(
-        query(collection(db, "support"), where("tournamentId", "==", tournamentId)),
-        (snap) => {
-          const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-          // admin sees all, player sees own
-          const t = activeTournament();
-          const admin = isAdmin(t);
-          state.supportTickets = admin ? all : all.filter(x => x.userId === state.user.uid);
-          state.supportTickets.sort((a,b) => (b.lastUpdated||0)-(a.lastUpdated||0));
-          render();
-        }
-      );
+  query(
+    collection(db, "support_threads"),
+    where("tournamentId", "==", tournamentId),
+    orderBy("lastUpdated", "desc")
+  ),
+  snap => {
+    const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    const t = activeTournament();
+    const admin = isAdmin(t);
+
+    state.supportTickets = admin
+      ? all
+      : all.filter(x => x.userId === state.user.uid);
+
+    render();
+  }
+);
+
 
       // Presence via RTDB
       const presRoot = rref(rtdb, `presence/${tournamentId}`);
@@ -797,36 +805,42 @@ const firebaseConfig = {
     async function sendSupportMessage(tid, text) {
   if (!tid || !text.trim() || !state.user) return;
 
-  state.loadingAction = true; 
-  render();
+  const threadId = `${tid}_${state.user.uid}`;
+  const isAdminUser = isAdmin(activeTournament());
 
-  try {
-    const threadId = `${tid}_${state.user.uid}`;
-    const isAdmin = state.isManager === true;
+  // 1️⃣ ensure thread doc exists
+  await setDoc(
+    doc(db, "support_threads", threadId),
+    {
+      tournamentId: tid,
+      userId: state.user.uid,
+      userName: state.profile?.playerName || state.user.displayName || "Player",
+      lastUpdated: now()
+    },
+    { merge: true }
+  );
 
-    await addDoc(
-      collection(db, "support_threads", threadId, "messages"),
-      {
-        text: text.trim(),
-        fromUid: state.user.uid,
-        fromRole: isAdmin ? "admin" : "player",
-        fromName:
-          state.user.displayName ||
-          state.profile?.playerName ||
-          (isAdmin ? "Admin" : "Player"),
-        createdAt: serverTimestamp()
-      }
-    );
+  // 2️⃣ add message
+  await addDoc(
+    collection(db, "support_threads", threadId, "messages"),
+    {
+      text: text.trim(),
+      senderId: state.user.uid,
+      senderName: state.user.displayName || "Player",
+      senderRole: isAdminUser ? "admin" : "player",
+      createdAt: now()
+    }
+  );
 
-    toast("Message sent");
-  } catch (e) {
-    console.error(e);
-    toast(e?.message || "Support failed");
-  } finally {
-    state.loadingAction = false;
-    render();
-  }
+  // 3️⃣ update thread timestamp
+  await updateDoc(
+    doc(db, "support_threads", threadId),
+    { lastUpdated: now() }
+  );
+
+  toast("Message sent");
 }
+
 
 
 
@@ -2329,6 +2343,23 @@ function subscribeAdminSupportThreads(tid) {
   `;
 }
 
+function subscribeSupportMessages(threadId) {
+  if (subs.supportMessages) subs.supportMessages();
+
+  subs.supportMessages = onSnapshot(
+    query(
+      collection(db, "support_threads", threadId, "messages"),
+      orderBy("createdAt", "asc")
+    ),
+    snap => {
+      const msgs = snap.docs.map(d => d.data());
+      const ticket = state.supportTickets.find(t => t.id === threadId);
+      if (ticket) ticket.messages = msgs;
+      render();
+    }
+  );
+}
+
 
 
     function MatchCenterModal(match) {
@@ -2808,6 +2839,11 @@ if (action === "openUPI") {
     toast("UPI not configured");
     return;
   }
+if (action === "openTicket") {
+  state.uiSupportActiveId = value;
+  subscribeSupportMessages(value);
+}
+
 
 if (action === "rejectParticipant") {
   await updateDoc(doc(db, "participants", value), {
