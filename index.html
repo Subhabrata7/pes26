@@ -61,6 +61,7 @@ getDocs,
       orderBy,
       limit,
       serverTimestamp,
+documentId ,
       increment,
       arrayUnion,
       arrayRemove
@@ -151,6 +152,9 @@ matchChat: [],
     // active chat messages
   uiSupportActiveId: null,  // playerUid selected by admin
   uiSupportAdminView: "threads", // "threads" | "chat"
+myOwnedTournaments: [],
+myJoinedTournamentIds: [],
+myTournaments: [],
 
 
   // Presence (Realtime DB)
@@ -209,7 +213,10 @@ matchChat: [],
  matchdays: null,
       announcements: null,
       support: null,
-      presence: null
+      presence: null,
+myOwned: null,
+  myJoined: null,
+matchChat: null
     };
 
     function unsubscribeAllTournamentStreams() {
@@ -285,6 +292,83 @@ function getLiveMatchday() {
 }
 
 
+function subscribeMyTournaments() {
+ if (subs.myOwned) { subs.myOwned(); subs.myOwned = null; }
+  if (subs.myJoined) { subs.myJoined(); subs.myJoined = null; }
+  if (!state.user) return;
+
+  const uid = state.user.uid;
+
+  // 🔹 A) tournaments I own
+  const ownedQ = query(
+    collection(db, "tournaments"),
+    where("ownerId", "==", uid)
+  );
+
+  subs.myOwned = onSnapshot(ownedQ, snap => {
+    state.myOwnedTournaments = snap.docs.map(d => ({
+      id: d.id,
+      ...d.data()
+    }));
+    mergeMyTournaments();
+  });
+
+  // 🔹 B) tournaments I joined (via participants)
+  const joinedQ = query(
+    collection(db, "participants"),
+    where("userId", "==", uid)
+  );
+
+  subs.myJoined = onSnapshot(joinedQ, snap => {
+    state.myJoinedTournamentIds = snap.docs.map(d => d.data().tournamentId);
+    mergeMyTournaments();
+  });
+}
+
+async function mergeMyTournaments() {
+  const ids = new Set([
+    ...state.myOwnedTournaments.map(t => t.id),
+    ...state.myJoinedTournamentIds
+  ]);
+
+  if (ids.size === 0) {
+    state.myTournaments = [];
+    render();
+    return;
+  }
+
+  // Fetch tournaments for joined IDs not already owned
+  const missingIds = [...ids].filter(
+    id => !state.myOwnedTournaments.find(t => t.id === id)
+  );
+
+  let joinedTournaments = [];
+
+  if (missingIds.length > 0) {
+    const chunks = [];
+    while (missingIds.length) chunks.push(missingIds.splice(0, 10));
+
+    for (const chunk of chunks) {
+      const qy = query(
+  collection(db, "tournaments"),
+  where(documentId(), "in", chunk)
+);
+
+
+      const snap = await getDocs(qy);
+      joinedTournaments.push(
+        ...snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      );
+    }
+  }
+
+  state.myTournaments = [
+    ...state.myOwnedTournaments,
+    ...joinedTournaments
+  ];
+
+  render();
+}
 
    function subscribeTournamentStreams(tournamentId) {
   unsubscribeAllTournamentStreams();
@@ -344,6 +428,8 @@ function getLiveMatchday() {
         state.profile = null;
         state.tournaments = [];
         state.activeTournamentId = null;
+
+
         unsubscribeAllTournamentStreams();
         if (subs.tournaments) { subs.tournaments(); subs.tournaments=null; }
         if (subs.profile) { subs.profile(); subs.profile=null; }
@@ -353,6 +439,7 @@ function getLiveMatchday() {
 
       subscribeProfile(u.uid);
       subscribeTournaments();
+subscribeMyTournaments();
       render();
     });
 
@@ -1522,27 +1609,89 @@ async function checkAndEndMatchdays(tournamentId) {
     }
 
     function PageMyTournaments() {
-      const uid = state.user.uid;
-      const mine = state.tournaments.filter(t => t.ownerId === uid || (Array.isArray(t.participants) && t.participants.includes(uid)));
 
-      return `
-        <div class="space-y-8">
-          <div class="border-l-4 border-[#39FF14] pl-6">
-            <h2 class="text-4xl font-black italic uppercase tracking-tighter">My Tournaments</h2>
-            <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Joined + Owned</p>
-          </div>
-
-          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            ${mine.map(t => TournamentCard(t)).join("")}
-          </div>
-
-          ${!mine.length ? `
-            <div class="py-20 text-center text-slate-600 font-black uppercase tracking-widest text-[10px]">
-              Nothing here yet — join or create a tournament.
-            </div>` : ""}
+  if (!state.myTournaments || state.myTournaments.length === 0) {
+    return `
+      <div class="space-y-8">
+        <div class="border-l-4 border-[#39FF14] pl-6">
+          <h2 class="text-4xl font-black italic uppercase tracking-tighter">
+            My Tournaments
+          </h2>
+          <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">
+            Joined + Owned
+          </p>
         </div>
-      `;
-    }
+
+        <div class="py-24 text-center text-slate-600 font-black uppercase tracking-widest text-[10px]">
+          Nothing here yet — join or create a tournament.
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="space-y-8">
+
+      <div class="border-l-4 border-[#39FF14] pl-6">
+        <h2 class="text-4xl font-black italic uppercase tracking-tighter">
+          My Tournaments
+        </h2>
+        <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">
+          Joined + Owned
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        ${state.myTournaments.map(t => `
+          <div
+            class="group rounded-[2.2rem] border border-white/10 bg-[#0a0a0a] p-8 shadow-2xl cursor-pointer
+                   hover:border-[#39FF14]/40 transition-all"
+            data-action="enterTournament"
+            data-value="${t.id}"
+          >
+
+            <div class="flex items-center justify-between mb-3">
+              <div class="text-xl font-black italic uppercase tracking-tighter text-white">
+                ${esc(t.name || "Tournament")}
+              </div>
+
+              ${
+                t.ownerId === state.user.uid
+                  ? `<span class="px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest
+                           bg-[#39FF14] text-black">OWNER</span>`
+                  : `<span class="px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest
+                           bg-white/10 text-slate-200">JOINED</span>`
+              }
+            </div>
+
+            <div class="flex flex-wrap gap-2 mb-4">
+              <span class="px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest
+                           border border-white/10 text-slate-400">
+                ${esc(t.format || "League")}
+              </span>
+
+              <span class="px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest
+                           border border-[#39FF14]/30 text-[#39FF14] bg-[#39FF14]/5">
+                ${esc(t.status || "Upcoming")}
+              </span>
+            </div>
+
+            <div class="pt-4 border-t border-white/10 flex items-center justify-between">
+              <div class="text-[9px] font-black uppercase tracking-widest text-slate-500">
+                Players
+              </div>
+              <div class="text-[10px] font-black uppercase tracking-widest text-slate-300">
+                ${Number(t.playerCount || 0)} / ${Number(t.maxPlayers || 0)}
+              </div>
+            </div>
+
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
 
     function PageProfile() {
       const p = state.profile || {};
