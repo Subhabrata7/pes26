@@ -50,6 +50,7 @@
       collection,
       doc,
       getDoc,
+getDocs, 
       setDoc,
       addDoc,
       updateDoc,
@@ -120,37 +121,56 @@ const firebaseConfig = {
     /* =========================
        3) GLOBAL STATE
     ========================= */
-    const state = {
-      booting: true,
-      user: null,
-      profile: null,
-      authModalOpen: false,
+   const state = {
+  // App
+  booting: true,
+  user: null,
+  profile: null,
+  authModalOpen: false,
 
-      globalTab: "Browse Tournaments",
-      tournamentTab: "Home",
-      activeTournamentId: null,
+  // Navigation
+  globalTab: "Browse Tournaments",
+  tournamentTab: "Home",
+  activeTournamentId: null,
 
-      tournaments: [],
-      participants: [],
-      matches: [],
-      announcements: [],
-      supportTickets: [],
+  // Core data
+  tournaments: [],
+  participants: [],
+  matches: [],
+ matchdays: [], 
+matchChat: [], 
 
-      presence: {},
+  // Announcements
+  announcements: [],
 
-      // UI
-      showProfileEdit: false,
-      showCreateTournament: false,
-      showPaymentModal: false,
-      paymentUTR: "",
+  // SUPPORT (FINAL – no tickets, no channels)
+    // SUPPORT (1-to-1: player <-> admin)
+  supportThreads: [],       // admin sees player thread list
+  supportMessages: [],  
+ uiSupportReady: false, 
+    // active chat messages
+  uiSupportActiveId: null,  // playerUid selected by admin
+  uiSupportAdminView: "threads", // "threads" | "chat"
 
-      // sponsor
-      sponsorIndex: 0,
-      sponsorTimer: null,
 
-      toast: null,
-      loadingAction: false
-    };
+  // Presence (Realtime DB)
+  presence: {},
+
+  // UI flags
+  showProfileEdit: false,
+  showCreateTournament: false,
+  showPaymentModal: false,
+  paymentUTR: "",
+
+  // Sponsor rotation
+  sponsorIndex: 0,
+  sponsorTimer: null,
+
+  // Feedback
+  toast: null,
+  loadingAction: false
+};
+
 
     const GLOBAL_TABS = ["Browse Tournaments", "My Tournaments", "Profile", "Admin Panel"];
     const TOURNEY_TABS = ["Home", "Players", "Standings", "Fixtures", "Bracket", "Announcements", "Support", "Admin"];
@@ -186,22 +206,27 @@ const firebaseConfig = {
       profile: null,
       participants: null,
       matches: null,
+ matchdays: null,
       announcements: null,
       support: null,
       presence: null
     };
 
     function unsubscribeAllTournamentStreams() {
-      ["participants","matches","announcements","support","presence"].forEach(k => {
-        if (subs[k]) { subs[k](); subs[k] = null; }
-      });
-      state.participants = [];
-      state.matches = [];
-      state.announcements = [];
-      state.supportTickets = [];
-      state.presence = {};
-      clearSponsorTimer();
-    }
+  ["participants", "matches", "matchdays", "announcements", "support", "presence"]
+    .forEach(k => {
+      if (subs[k]) {
+        subs[k]();
+        subs[k] = null;
+      }
+    });
+
+  state.participants = [];
+  state.matches = [];
+  state.matchdays = [];      // ✅ ADD
+  state.announcements = [];
+}
+
 
     function clearSponsorTimer() {
       if (state.sponsorTimer) { clearInterval(state.sponsorTimer); state.sponsorTimer = null; }
@@ -250,80 +275,62 @@ const firebaseConfig = {
         render();
       });
     }
+function isMatchdayLocked(matchdayNumber) {
+  const md = state.matchdays.find(m => m.number === matchdayNumber);
+  return md?.locked === true;
+}
 
-    function subscribeTournamentStreams(tournamentId) {
-      unsubscribeAllTournamentStreams();
-      if (!tournamentId || !isLoggedIn()) return;
-
-      // Participants
-      subs.participants = onSnapshot(
-        query(collection(db, "participants"), where("tournamentId", "==", tournamentId)),
-        (snap) => {
-          state.participants = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (b.createdAt||0)-(a.createdAt||0));
-          render();
-        }
-      );
-
-      // Matches
-      subs.matches = onSnapshot(
-        query(collection(db, "matches"), where("tournamentId", "==", tournamentId)),
-        (snap) => {
-          state.matches = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (a.order||0)-(b.order||0));
-          render();
-        }
-      );
-
-      // Announcements
-     subs.announcements = onSnapshot(
-  query(
-    collection(db, "tournaments", tournamentId, "announcements"),
-    orderBy("createdAt", "desc")
-  ),
-  (snap) => {
-    state.announcements = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    render();
-  },
-  (e) => { console.error(e); render(); }
-);
+function getLiveMatchday() {
+  return state.matchdays.find(m => m.started && !m.locked);
+}
 
 
-      // Support tickets (array messages)
-      subs.support = onSnapshot(
-  query(
-    collection(db, "support_threads"),
-    where("tournamentId", "==", tournamentId),
-    orderBy("lastUpdated", "desc")
-  ),
-  snap => {
-    const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-    const t = activeTournament();
-    const admin = isAdmin(t);
+   function subscribeTournamentStreams(tournamentId) {
+  unsubscribeAllTournamentStreams();
 
-    state.supportTickets = admin
-      ? all
-      : all.filter(x => x.userId === state.user.uid);
-
-    render();
-  }
-);
-
-
-      // Presence via RTDB
-      const presRoot = rref(rtdb, `presence/${tournamentId}`);
-      subs.presence = onValue(presRoot, (snap) => {
-        state.presence = snap.val() || {};
-        render();
-      });
-
-      // Register my presence
-      const myRef = rref(rtdb, `presence/${tournamentId}/${state.user.uid}`);
-      rset(myRef, { status:"online", name: state.user.displayName || (state.profile?.playerName||"Player"), lastSeen: now() });
-      onDisconnect(myRef).remove();
-
-      // Sponsor rotation
-      startSponsorTimer(activeTournament());
+  // Participants
+  subs.participants = onSnapshot(
+    query(collection(db, "participants"), where("tournamentId", "==", tournamentId)),
+    snap => {
+      state.participants = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      render();
     }
+  );
+
+  // Matches
+  subs.matches = onSnapshot(
+    query(collection(db, "matches"), where("tournamentId", "==", tournamentId)),
+    snap => {
+      state.matches = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      render();
+    }
+  );
+
+  // ✅ MATCHDAYS (NEW)
+  subs.matchdays = onSnapshot(
+    query(collection(db, "matchdays"), where("tournamentId", "==", tournamentId)),
+    snap => {
+      state.matchdays = snap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (a.number || 0) - (b.number || 0));
+      render();
+    }
+  );
+
+  // Announcements
+  subs.announcements = onSnapshot(
+    query(
+      collection(db, "tournaments", tournamentId, "announcements"),
+      orderBy("createdAt", "desc")
+    ),
+    snap => {
+      state.announcements = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      render();
+    }
+  );
+}
+
 
     /* =========================
        5) AUTH FLOW
@@ -395,11 +402,22 @@ const firebaseConfig = {
     }
 
     function enterTournament(id) {
-      state.activeTournamentId = id;
-      state.tournamentTab = "Home";
-      subscribeTournamentStreams(id);
-      render();
-    }
+  state.activeTournamentId = id;
+  state.tournamentTab = "Home";
+
+  subscribeTournamentStreams(id);
+
+  const t = activeTournament();
+  if (isAdmin(t)) {
+    checkAndStartMatchdays(id);
+    checkAndEndMatchdays(id);
+  }
+
+  render();
+}
+
+
+
 
     function exitTournament() {
       state.activeTournamentId = null;
@@ -687,6 +705,11 @@ const firebaseConfig = {
 
     // Match Center modal
     async function toggleReady(match) {
+if (isMatchdayLocked(match.matchday)) {
+  toast("Matchday locked");
+  return;
+}
+
       if (!match || !state.user) return;
       const isA = match.playerAId === state.user.uid;
       const isB = match.playerBId === state.user.uid;
@@ -706,31 +729,47 @@ const firebaseConfig = {
     }
 
     async function submitScore(match, a, b) {
-      if (!match || !state.user) return;
-      const isA = match.playerAId === state.user.uid;
-      const isB = match.playerBId === state.user.uid;
-      if (!isA && !isB) return;
+if (isMatchdayLocked(match.matchday)) {
+  toast("Matchday locked");
+  return;
+}
 
-      // update my accuracyTotal
-      const myP = state.participants.find(p => p.userId === state.user.uid);
-      if (!myP) { toast("Participant not found"); return; }
+  if (!match || !state.user) return;
 
-      state.loadingAction = true; render();
-      try {
-        await updateDoc(doc(db, "participants", myP.id), { accuracyTotal: increment(1) });
-        await updateDoc(doc(db, "matches", match.id), {
-          score: { a: Number(a), b: Number(b) },
-          status: "pending_confirmation",
-          submittedBy: state.user.uid,
-          submittedAt: now()
-        });
-        toast("Score submitted");
-      } catch (e) {
-        toast(e?.message || "Submit failed");
-      } finally {
-        state.loadingAction = false; render();
-      }
-    }
+  const uid = state.user.uid;
+  const isA = match.playerAId === uid;
+  const isB = match.playerBId === uid;
+  if (!isA && !isB) return;
+
+  // must be in the tournament participants list
+  const myP = state.participants.find(p => p.userId === uid);
+  if (!myP) { toast("Participant not found"); return; }
+
+  // must be pending + both ready (same as modal gating)
+  if ((match.status || "pending") !== "pending") { toast("Match not open"); return; }
+  if (!match.readyA || !match.readyB) { toast("Both players must be ready"); return; }
+
+  state.loadingAction = true; render();
+  try {
+    await updateDoc(doc(db, "participants", myP.id), { accuracyTotal: increment(1) });
+
+    await updateDoc(doc(db, "matches", match.id), {
+      "score.a": Number(a),
+      "score.b": Number(b),
+      status: "pending_confirmation",
+      submittedBy: uid,
+      submittedAt: now()
+    });
+
+    toast("Score submitted");
+  } catch (e) {
+    console.error(e);
+    toast(e?.message || "Submit failed");
+  } finally {
+    state.loadingAction = false; render();
+  }
+}
+
 
     async function confirmScore(match) {
       if (!match || !state.user) return;
@@ -802,45 +841,273 @@ const firebaseConfig = {
     /* =========================
        Support Chat
     ========================= */
-    async function sendSupportMessage(tid, text) {
-  if (!tid || !text.trim() || !state.user) return;
+/* =========================
+   Support Chat (1-to-1)
+   Path:
+   tournaments/{tid}/support_threads/{playerUid}
+   tournaments/{tid}/support_threads/{playerUid}/messages/{msgId}
+========================= */
 
-  const threadId = `${tid}_${state.user.uid}`;
-  const isAdminUser = isAdmin(activeTournament());
-
-  // 1️⃣ ensure thread doc exists
-  await setDoc(
-    doc(db, "support_threads", threadId),
-    {
-      tournamentId: tid,
-      userId: state.user.uid,
-      userName: state.profile?.playerName || state.user.displayName || "Player",
-      lastUpdated: now()
-    },
-    { merge: true }
-  );
-
-  // 2️⃣ add message
-  await addDoc(
-    collection(db, "support_threads", threadId, "messages"),
-    {
-      text: text.trim(),
-      senderId: state.user.uid,
-      senderName: state.user.displayName || "Player",
-      senderRole: isAdminUser ? "admin" : "player",
-      createdAt: now()
-    }
-  );
-
-  // 3️⃣ update thread timestamp
-  await updateDoc(
-    doc(db, "support_threads", threadId),
-    { lastUpdated: now() }
-  );
-
-  toast("Message sent");
+function unsubscribeSupportOnly() {
+  if (subs.support) { subs.support(); subs.support = null; }
 }
 
+async function ensureSupportThread(tid, playerUid) {
+  const threadRef = doc(db, "tournaments", tid, "support_threads", playerUid);
+  await setDoc(threadRef, {
+    playerUid,
+    playerName: state.profile?.playerName || state.user?.displayName || "Player",
+    lastMessage: "",
+    lastUpdated: serverTimestamp()
+  }, { merge: true });
+  return threadRef;
+}
+
+function subscribeSupportContext(tid) {
+  unsubscribeSupportOnly();
+  const t = activeTournament();
+  if (!tid || !t || !state.user) return;
+
+  if (isAdmin(t)) {
+    // Admin: subscribe threads list
+    const threadsQ = query(
+      collection(db, "tournaments", tid, "support_threads"),
+      orderBy("lastUpdated", "desc")
+    );
+
+    subs.support = onSnapshot(threadsQ, (snap) => {
+      state.supportThreads = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // keep messages if a thread is open, otherwise just list
+      render();
+    }, () => render());
+
+  } else {
+    // Player: subscribe ONLY his messages
+    subscribePlayerSupport(tid);
+  }
+}
+
+function subscribePlayerSupport(tid) {
+  unsubscribeSupportOnly();
+  if (!tid || !state.user) return;
+
+  const uid = state.user.uid;
+  const threadRef = doc(db, "tournaments", tid, "support_threads", uid);
+
+  // Ensure thread exists (safe)
+  ensureSupportThread(tid, uid);
+
+  const msgsQ = query(
+    collection(threadRef, "messages"),
+    orderBy("createdAt", "asc")
+  );
+
+  subs.support = onSnapshot(msgsQ, (snap) => {
+    state.supportMessages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    render();
+  }, () => render());
+}
+
+function subscribeAdminThread(tid, playerUid) {
+  unsubscribeSupportOnly();
+  if (!tid || !playerUid) return;
+
+  state.uiSupportActiveId = playerUid;
+  state.uiSupportAdminView = "chat";
+
+  const threadRef = doc(db, "tournaments", tid, "support_threads", playerUid);
+  const msgsQ = query(
+    collection(threadRef, "messages"),
+    orderBy("createdAt", "asc")
+  );
+
+  subs.support = onSnapshot(msgsQ, (snap) => {
+    state.supportMessages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    render();
+  }, () => render());
+}
+
+async function sendSupportMessage(tid, text) {
+  if (!tid || !text.trim() || !state.user) return;
+
+  const t = activeTournament();
+  const uid = state.user.uid;
+
+  // ✅ target thread:
+  // - player writes to their own thread
+  // - admin writes to currently opened player thread
+  const targetPlayerUid = isAdmin(t) ? state.uiSupportActiveId : uid;
+  if (!targetPlayerUid) {
+    toast("Select a player thread first");
+    return;
+  }
+
+  // ensure thread doc exists
+  await ensureSupportThread(tid, targetPlayerUid);
+
+  const threadRef = doc(db, "tournaments", tid, "support_threads", targetPlayerUid);
+
+  await addDoc(collection(threadRef, "messages"), {
+    fromUid: uid,
+    fromName: state.profile?.playerName || state.user.displayName || "User",
+    fromRole: isAdmin(t) ? "admin" : "player",
+    text: text.trim(),
+    createdAt: serverTimestamp()
+  });
+
+  // update last message for thread list
+  await updateDoc(threadRef, {
+    lastMessage: text.trim().slice(0, 120),
+    lastUpdated: serverTimestamp()
+  });
+}
+
+async function resolveDispute(match, finalScore, guiltyPlayerId) {
+  if (!match || !finalScore || !guiltyPlayerId) return;
+
+  try {
+    // 1️⃣ Update match
+    await updateDoc(doc(db, "matches", match.id), {
+      score: finalScore,
+      status: "confirmed",
+      resolvedBy: state.user.uid,
+      resolvedAt: serverTimestamp()
+    });
+
+    // 2️⃣ Add strike to participant
+    const q = query(
+      collection(db, "participants"),
+      where("tournamentId", "==", match.tournamentId),
+      where("userId", "==", guiltyPlayerId)
+    );
+
+    const snap = await getDocs(q);
+    snap.forEach(async d => {
+      await updateDoc(d.ref, {
+        disputeStrikes: increment(1)
+      });
+    });
+
+    toast("Dispute resolved & strike applied");
+  } catch (e) {
+    toast(e.message || "Resolve failed");
+  }
+}
+
+
+async function checkAndStartMatchdays(tournamentId) {
+  if (!state.user) return;
+
+  const now = new Date();
+
+  const q = query(
+    collection(db, "matchdays"),
+    where("tournamentId", "==", tournamentId),
+    where("started", "==", false)
+  );
+
+  const snap = await getDocs(q);
+  if (snap.empty) return;
+
+  for (const docSnap of snap.docs) {
+    const md = docSnap.data();
+    const mdDate = md.date.toDate();
+
+    // Matchday date has arrived
+    if (mdDate <= now) {
+
+      // 🔒 Run-once protection
+      if (md.started === true) continue;
+
+      // 1️⃣ Mark matchday started
+      await updateDoc(doc(db, "matchdays", docSnap.id), {
+        started: true,
+        startedAt: serverTimestamp()
+      });
+
+      // 2️⃣ Create announcement
+      await addDoc(
+        collection(db, "tournaments", tournamentId, "announcements"),
+        {
+          type: "matchday_start",
+          title: `Matchday ${md.number} Started`,
+          message: `Matchday ${md.number} has started. Congratulations to all players!`,
+          matchday: md.number,
+          createdAt: serverTimestamp(),
+          system: true
+        }
+      );
+
+      console.log(`Matchday ${md.number} started automatically`);
+    }
+  }
+}
+
+
+async function checkAndEndMatchdays(tournamentId) {
+  if (!state.user) return;
+
+  const now = new Date();
+
+  const mdSnap = await getDocs(
+    query(
+      collection(db, "matchdays"),
+      where("tournamentId", "==", tournamentId),
+      where("started", "==", true),
+      where("locked", "==", false)
+    )
+  );
+
+  for (const mdDoc of mdSnap.docs) {
+    const md = mdDoc.data();
+    const mdDate = md.date.toDate();
+
+    // Matchday ended
+    if (mdDate < now) {
+
+      // Get all matches of this matchday
+      const matchSnap = await getDocs(
+        query(
+          collection(db, "matches"),
+          where("tournamentId", "==", tournamentId),
+          where("matchday", "==", md.number)
+        )
+      );
+
+      for (const mDoc of matchSnap.docs) {
+        const m = mDoc.data();
+
+        if (m.status === "confirmed") continue;
+
+        let scoreA = 0, scoreB = 0;
+
+        // 🟢 One ready → 3–0
+        if (m.readyA && !m.readyB) {
+          scoreA = 3;
+        } else if (!m.readyA && m.readyB) {
+          scoreB = 3;
+        }
+        // 🟡 Both ready or none → 0–0
+
+        await updateDoc(doc(db, "matches", mDoc.id), {
+          "score.a": scoreA,
+          "score.b": scoreB,
+          status: "confirmed",
+          autoResolved: true,
+          resolvedAt: serverTimestamp()
+        });
+      }
+
+      // 🔒 Lock matchday
+      await updateDoc(doc(db, "matchdays", mdDoc.id), {
+        locked: true,
+        lockedAt: serverTimestamp()
+      });
+
+      console.log(`Matchday ${md.number} auto-closed`);
+    }
+  }
+}
 
 
 
@@ -1422,39 +1689,9 @@ const firebaseConfig = {
         </div>
       `;
     }
-function subscribePlayerSupport(tid) {
-  if (!state.user) return;
 
-  const threadId = `${tid}_${state.user.uid}`;
 
-  return onSnapshot(
-    query(
-      collection(db, "support_threads", threadId, "messages"),
-      orderBy("createdAt", "asc")
-    ),
-    snap => {
-      state.supportMessages = snap.docs.map(d => ({
-        id: d.id,
-        ...d.data()
-      }));
-      render();
-    }
-  );
-}
 
-function subscribeAdminSupportThreads(tid) {
-  if (!state.isManager) return;
-
-  return onSnapshot(
-    query(collection(db, "support_threads")),
-    snap => {
-      state.supportThreads = snap.docs
-        .map(d => ({ id: d.id }))
-        .filter(t => t.id.startsWith(tid + "_"));
-      render();
-    }
-  );
-}
 
     /* =========================
        TOURNAMENT TABS
@@ -1467,6 +1704,7 @@ function subscribeAdminSupportThreads(tid) {
       return `
         <div class="space-y-10">
           ${SponsorBannerUI(t)}
+
 
           <div class="rounded-[3rem] border border-white/10 bg-[#0a0a0a] p-10 md:p-14 shadow-2xl relative overflow-hidden">
             <div class="absolute -top-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full"></div>
@@ -1486,6 +1724,7 @@ function subscribeAdminSupportThreads(tid) {
               </div>
             </div>
           </div>
+${MatchdayLiveBanner()}
 
           <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
             ${!registered ? JoinPanel(t, full) : `
@@ -1793,131 +2032,191 @@ function subscribeAdminSupportThreads(tid) {
     }
 
     function TabAnnouncements(t) {
-      const admin = isAdmin(t);
-      const list = state.announcements;
+  const canPost = isAdmin(t);
 
-      return `
-        <div class="space-y-8">
-          <div class="flex items-end justify-between border-l-4 border-[#39FF14] pl-6">
-            <div>
-              <h2 class="text-3xl font-black italic uppercase tracking-tighter">Announcements</h2>
-              <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Tournament broadcasts</p>
-            </div>
-          </div>
+  return `
+    <div class="space-y-6">
 
-          ${admin ? `
-            <div class="rounded-[2rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl space-y-3">
-              <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">Post announcement</div>
-              <textarea id="annDraft" rows="3" class="w-full bg-black border border-white/10 rounded-xl p-4 text-slate-200 font-bold outline-none focus:border-[#39FF14]" placeholder="Write announcement..."></textarea>
-              <button data-action="postAnnouncement" class="px-8 py-3 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
-                Publish
-              </button>
-            </div>
-          ` : ""}
+      ${canPost ? `
+        <div class="rounded-2xl border border-white/10 bg-[#0a0a0a] p-6">
+          <textarea id="announcementText"
+            class="w-full h-28 bg-black border border-white/10 rounded-xl p-4 text-sm text-white"
+            placeholder="Write announcement..."></textarea>
 
-          <div class="space-y-4">
-            ${list.map(a => `
-              <div class="rounded-[2rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl">
-                <div class="flex items-start gap-4">
-                  <div class="w-10 h-10 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-[#39FF14]">
-                    ${Icon("megaphone","w-5 h-5")}
-                  </div>
-                  <div class="flex-1">
-                    <div class="text-slate-200 font-bold leading-relaxed">${esc(a.content)}</div>
-                    <div class="mt-3 text-[9px] font-black uppercase tracking-widest text-slate-600">
-                      ${esc(fmtDT(a.createdAt || 0))}${a.type==="system" ? " • SYSTEM" : ""}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            `).join("")}
-
-            ${!list.length ? `<div class="py-20 text-center text-slate-600 font-black uppercase tracking-widest text-[10px]">No announcements yet</div>` : ""}
-          </div>
+          <button data-action="postAnnouncement"
+            class="mt-4 px-6 py-3 rounded-xl bg-[#39FF14] text-black font-black uppercase text-[10px]">
+            Publish
+          </button>
         </div>
-      `;
-    }
+      ` : ""}
 
-    function TabSupport(t) {
-      const admin = isAdmin(t);
-      const tickets = state.supportTickets;
-      const activeId = state.uiSupportActiveId || (tickets.length ? tickets[0].id : null);
-      const active = tickets.find(x => x.id === activeId) || null;
+      <div class="space-y-3">
+        ${
+          state.announcements.length
+            ? state.announcements.map(a => {
+                const ts =
+                  a.createdAt?.toDate
+                    ? a.createdAt.toDate()
+                    : null;
 
-      // store chosen
-      state.uiSupportActiveId = activeId;
-
-      return `
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div class="rounded-[2rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl overflow-y-auto no-scrollbar h-[620px]">
-            <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 border-b border-white/10 pb-4">Support Channels</div>
-            <div class="mt-4 space-y-3">
-              ${tickets.map(x => {
-                const last = (x.messages && x.messages.length) ? x.messages[x.messages.length-1] : null;
-                const title = admin ? (x.userName || "Player") : "My Ticket";
                 return `
-                  <div data-action="openTicket" data-value="${esc(x.id)}"
-                       class="${cn(
-                        "p-4 rounded-2xl border cursor-pointer transition-all",
-                        x.id===activeId ? "bg-[#39FF14]/10 border-[#39FF14]/30" : "bg-white/5 border-white/10 hover:border-white/20"
-                      )}">
-                    <div class="font-black uppercase italic text-white">${esc(title)}</div>
-                    <div class="mt-1 text-[9px] font-black uppercase tracking-widest text-slate-600 truncate">${esc(last?.text || "No messages")}</div>
+                  <div class="rounded-xl border border-white/10 bg-white/5 p-4">
+                    <div class="text-[10px] text-slate-400 font-black uppercase tracking-widest">
+                      ${ts ? ts.toLocaleString() : "Sending..."}
+                      • ${esc(a.createdByName || "Organizer")}
+                    </div>
+                    <div class="mt-2 text-white font-bold">
+                      ${esc(a.text)}
+                    </div>
                   </div>
                 `;
-              }).join("")}
+              }).join("")
+            : `
+              <div class="text-center text-slate-600 text-[10px] uppercase">
+                No announcements yet
+              </div>
+            `
+        }
+      </div>
 
-              ${!tickets.length ? `<div class="py-14 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">No support tickets</div>` : ""}
-            </div>
+    </div>
+  `;
+}
+
+
+
+function TabSupport(t) {
+
+  // Safety: user must be logged in
+  if (!state.user) {
+    return `<div class="p-10 text-center text-slate-600">Login required</div>`;
+  }
+
+  // If support not initialized yet
+  if (!state.uiSupportReady) {
+    return `<div class="p-10 text-center text-slate-600">Loading support…</div>`;
+  }
+
+  const isAdminUser = isAdmin(t);
+
+  return `
+    <div class="rounded-[2rem] border border-white/10 bg-black p-6 h-[70vh] flex gap-4">
+
+      <!-- ADMIN: THREAD LIST -->
+      ${isAdminUser ? `
+        <div class="w-64 shrink-0 border-r border-white/10 pr-3 overflow-y-auto">
+          <div class="text-[10px] uppercase font-black text-slate-400 mb-3">
+            Support Threads
           </div>
 
-          <div class="lg:col-span-2 rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl h-[620px] flex flex-col">
-            ${active ? `
-              <div class="flex items-center justify-between border-b border-white/10 pb-4">
-                <div>
-                  <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">Active Ticket</div>
-                  <div class="text-lg font-black uppercase italic">${esc(admin ? (active.userName || "Player") : "My Support")}</div>
+          ${state.supportThreads.length === 0 ? `
+            <div class="text-slate-600 text-sm">
+              No player messages yet
+            </div>
+          ` : state.supportThreads.map(th => `
+            <button
+              data-action="openSupportThread"
+              data-value="${th.playerUid}"
+              class="block w-full text-left px-3 py-2 rounded-xl mb-2
+                ${state.uiSupportActiveId === th.playerUid
+                  ? "bg-[#39FF14] text-black"
+                  : "bg-white/5 text-white hover:bg-white/10"}">
+              <div class="font-semibold text-sm">
+                ${esc(th.playerName || th.playerUid)}
+              </div>
+              ${th.lastMessage ? `
+                <div class="text-xs opacity-60 truncate">
+                  ${esc(th.lastMessage)}
                 </div>
-                <div class="text-[9px] font-black uppercase tracking-widest text-slate-600">Updated: ${esc(fmtDT(active.lastUpdated||0))}</div>
-              </div>
+              ` : ``}
+            </button>
+          `).join("")}
+        </div>
+      ` : ``}
 
-              <div class="flex-1 overflow-y-auto no-scrollbar py-5 space-y-3">
-                ${(active.messages||[]).map(m => {
-                  const mine = m.senderId === state.user.uid;
-                  return `
-                    <div class="${cn("flex", mine ? "justify-end" : "justify-start")}">
-                      <div class="${cn("max-w-[80%] p-4 rounded-2xl text-sm font-bold leading-relaxed", mine ? "bg-[#39FF14] text-black rounded-tr-none" : "bg-white/5 text-slate-100 rounded-tl-none border border-white/10")}">
-                        ${esc(m.text)}
-                        <div class="${cn("mt-2 text-[9px] font-black uppercase tracking-widest opacity-70", mine ? "text-black" : "text-slate-400")}">
-                          ${esc(m.senderName)} • ${esc(fmtDT(m.createdAt||0))}
-                        </div>
-                      </div>
-                    </div>
-                  `;
-                }).join("")}
-              </div>
+      <!-- CHAT AREA -->
+      <div class="flex flex-col flex-1">
 
-              <div class="pt-4 border-t border-white/10 flex gap-3">
-                <input id="supportMsg" class="flex-1 bg-black border border-white/10 rounded-xl px-5 py-4 text-sm font-bold text-slate-200 outline-none focus:border-[#39FF14]" placeholder="Type message..." />
-                <button data-action="sendSupport" data-value="${esc(active.id)}" class="px-6 py-4 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
-                  ${Icon("chat","w-4 h-4 inline-block -mt-0.5 mr-2")}Send
-                </button>
+        <!-- MESSAGES -->
+        <div class="flex-1 overflow-y-auto space-y-3 pr-1">
+
+          ${state.supportMessages.length === 0 ? `
+            <div class="text-center text-slate-600 mt-10">
+              No messages yet
+            </div>
+          ` : state.supportMessages.map(m => `
+            <div class="${m.fromUid === state.user.uid ? "text-right" : "text-left"}">
+              <div class="inline-block max-w-[75%] px-4 py-2 rounded-xl
+                ${m.fromUid === state.user.uid
+                  ? "bg-[#39FF14] text-black"
+                  : "bg-white/10 text-white"}">
+                <div class="text-[9px] font-black uppercase opacity-60">
+                  ${esc(m.fromName)} • ${esc(m.fromRole)}
+                </div>
+                <div class="mt-1 text-sm">${esc(m.text)}</div>
               </div>
-            ` : `
-              <div class="h-full flex items-center justify-center text-slate-700 font-black uppercase tracking-[0.5em] text-[10px]">
-                Select a ticket
-              </div>
-              <div class="pt-4 border-t border-white/10 flex gap-3">
-                <input id="supportMsg" class="flex-1 bg-black border border-white/10 rounded-xl px-5 py-4 text-sm font-bold text-slate-200 outline-none focus:border-[#39FF14]" placeholder="Start support message..." />
-                <button data-action="sendSupport" data-value="" class="px-6 py-4 rounded-xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
-                  ${Icon("chat","w-4 h-4 inline-block -mt-0.5 mr-2")}Create
-                </button>
-              </div>
-            `}
+            </div>
+          `).join("")}
+
+        </div>
+
+        <!-- INPUT BAR -->
+        <div class="mt-4 flex gap-2" data-support-bar>
+          <input
+            id="supportInput"
+            data-support-input
+            class="flex-1 bg-black border border-white/10 rounded-xl px-4 py-3 text-white"
+            placeholder="${isAdminUser && !state.uiSupportActiveId
+              ? "Select a player to reply…"
+              : "Type message…"}"
+            ${isAdminUser && !state.uiSupportActiveId ? "disabled" : ""}
+          />
+          <button
+            data-action="sendSupport"
+            class="px-6 py-3 rounded-xl bg-[#39FF14] text-black font-black
+              ${isAdminUser && !state.uiSupportActiveId ? "opacity-40 cursor-not-allowed" : ""}">
+            Send
+          </button>
+        </div>
+
+      </div>
+    </div>
+  `;
+}
+
+
+
+
+
+
+function SupportChatBox() {
+  return `
+    <div class="flex-1 overflow-y-auto space-y-2">
+      ${(state.supportMessages || []).map(m => `
+        <div class="flex ${m.senderId === state.user.uid ? "justify-end" : "justify-start"}">
+          <div class="px-4 py-2 rounded-xl text-sm
+            ${m.senderId === state.user.uid
+              ? "bg-[#39FF14] text-black"
+              : "bg-white/10 text-white"}">
+            ${esc(m.text)}
           </div>
         </div>
-      `;
-    }
+      `).join("")}
+    </div>
+
+    <div class="flex gap-2 pt-3 border-t border-white/10">
+      <input id="supportMsg"
+        class="flex-1 bg-black border border-white/10 rounded-xl px-3 py-2 text-white"
+        placeholder="Type message..." />
+      <button data-action="sendSupport"
+        class="px-5 py-2 rounded-xl bg-[#39FF14] text-black font-black text-xs">
+        Send
+      </button>
+    </div>
+  `;
+}
+
+
 
     function TabAdmin(t) {
       if (!isAdmin(t)) {
@@ -2075,6 +2374,43 @@ function subscribeAdminSupportThreads(tid) {
         </div>
       `;
     }
+
+function SupportUI() {
+  const msgs = state.supportMessages || [];
+
+  return `
+    <div class="flex flex-col h-[70vh] rounded-3xl border border-white/10 bg-black/60 p-4">
+      
+      <div class="flex-1 overflow-y-auto space-y-3">
+        ${msgs.map(m => `
+          <div class="${m.uid === state.user.uid ? "text-right" : "text-left"}">
+            <div class="inline-block px-4 py-3 rounded-2xl max-w-[75%]
+              ${m.uid === state.user.uid
+                ? "bg-[#39FF14] text-black"
+                : "bg-white/10 text-white"}">
+              <div class="text-[10px] uppercase font-black opacity-60">
+                ${m.name} • ${m.role}
+              </div>
+              <div class="text-sm mt-1">${esc(m.text)}</div>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+
+      <div class="mt-3 flex gap-2">
+        <input id="supportInput"
+          placeholder="Type message..."
+          class="flex-1 bg-black border border-white/10 rounded-xl px-4 py-3 text-sm" />
+
+        <button onclick="sendSupportMessage(state.activeTournamentId, document.getElementById('supportInput').value)"
+          class="px-6 rounded-xl bg-[#39FF14] text-black font-black">
+          Send
+        </button>
+      </div>
+    </div>
+  `;
+}
+
 
     function AdminPermissionsUI(t) {
       const owner = (t.ownerId === state.user.uid);
@@ -2343,118 +2679,268 @@ function subscribeAdminSupportThreads(tid) {
   `;
 }
 
-function subscribeSupportMessages(threadId) {
-  if (subs.supportMessages) subs.supportMessages();
 
-  subs.supportMessages = onSnapshot(
+function subscribeSupportMessages(tournamentId) {
+  if (subs.support) {
+    subs.support();
+    subs.support = null;
+  }
+
+  if (!tournamentId) return;
+
+  const q = query(
+    collection(db, "tournaments", tournamentId, "support_messages"),
+    orderBy("createdAt", "asc")
+  );
+
+  subs.support = onSnapshot(q, snap => {
+    state.supportMessages = snap.docs.map(d => ({
+      id: d.id,
+      ...d.data()
+    }));
+    render();
+  });
+}
+
+function openAdminSupportThread(threadId) {
+  state.uiSupportActiveId = threadId;
+
+  onSnapshot(
     query(
       collection(db, "support_threads", threadId, "messages"),
       orderBy("createdAt", "asc")
     ),
     snap => {
-      const msgs = snap.docs.map(d => d.data());
-      const ticket = state.supportTickets.find(t => t.id === threadId);
-      if (ticket) ticket.messages = msgs;
+      state.supportMessages = snap.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      }));
       render();
+    }
+  );
+}
+function subscribeMatchChat(matchId) {
+  if (subs.matchChat) subs.matchChat();
+
+  const q = query(
+    collection(db, "matches", matchId, "chat"),
+    orderBy("createdAt","asc")
+  );
+
+  subs.matchChat = onSnapshot(q, snap => {
+    state.matchChat = snap.docs.map(d => d.data());
+    render();
+  });
+}
+async function sendMatchChat(matchId, text) {
+  if (!text.trim()) return;
+
+  await addDoc(
+    collection(db,"matches",matchId,"chat"),
+    {
+      fromUid: state.user.uid,
+      fromName: state.profile?.playerName || "Player",
+      text: text.trim(),
+      createdAt: serverTimestamp()
     }
   );
 }
 
 
+   function MatchCenterModal(match) {
+  const user = state.user;
+  const status = match.status || "pending";
 
-    function MatchCenterModal(match) {
-      if (!match) return "";
-      const uid = state.user.uid;
-      const isA = match.playerAId === uid;
-      const isB = match.playerBId === uid;
-      const isParticipant = isA || isB;
+  const myParticipant = state.participants.find(p => p.userId === user?.uid);
+  const isParticipant = !!myParticipant;
 
-      const myReady = isA ? !!match.readyA : !!match.readyB;
-      const otherReady = isA ? !!match.readyB : !!match.readyA;
+  const isA = match.playerAId === user?.uid;
+  const isB = match.playerBId === user?.uid;
 
-      const status = match.status || "pending";
-      const canSubmit = isParticipant && status === "pending" && myReady && otherReady;
-      const needsConfirm = isParticipant && status === "pending_confirmation" && match.submittedBy !== uid;
+  const myReady = isA ? match.readyA : isB ? match.readyB : false;
+  const otherReady = isA ? match.readyB : isB ? match.readyA : false;
 
-      return `
-        <div class="fixed inset-0 z-[140] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4 print-hidden">
-          <div class="w-full max-w-2xl rounded-[2.8rem] border border-[#39FF14]/20 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl relative overflow-hidden">
-            <div class="absolute -top-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full"></div>
+  const locked = isMatchdayLocked(match.matchday);
 
-            <button data-action="closeMatch" class="absolute top-6 right-6 p-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 hover:border-[#39FF14]/30">
-              ${Icon("x","w-4 h-4")}
+  const canSubmit =
+    isParticipant &&
+    status === "pending" &&
+    myReady &&
+    otherReady &&
+    !locked;
+
+  const needsConfirm =
+    isParticipant &&
+    status === "pending_confirmation" &&
+    match.submittedBy !== user?.uid;
+
+  return `
+  <div class="fixed inset-0 z-[140] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4">
+    <div class="w-full max-w-2xl rounded-[2.8rem] border border-[#39FF14]/20 bg-[#0a0a0a] p-8 shadow-2xl relative">
+
+      <!-- CLOSE -->
+      <button data-action="closeMatch"
+        class="absolute top-6 right-6 p-3 rounded-xl border border-white/10 bg-white/5 text-white">
+        ✕
+      </button>
+
+      <!-- HEADER -->
+      <div class="text-center space-y-2">
+        <div class="text-[10px] font-black uppercase tracking-widest text-[#39FF14]">
+          Match Center
+        </div>
+        <div class="text-2xl font-black italic uppercase">
+          ${esc(match.playerAName)} vs ${esc(match.playerBName)}
+        </div>
+        <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">
+          Status: ${esc(status.replaceAll("_", " "))}
+        </div>
+      </div>
+
+      <!-- PLAYERS -->
+      <div class="grid grid-cols-2 gap-4 mt-6">
+        ${MatchSide(match.playerAName, match.readyA, isA)}
+        ${MatchSide(match.playerBName, match.readyB, isB)}
+      </div>
+
+${locked ? `
+  <div class="mt-6 text-center text-red-400 text-xs font-black uppercase tracking-widest">
+    🔒 Matchday locked
+  </div>
+` : ""}
+
+      <!-- READY -->
+      ${
+       isParticipant && status === "pending" && !locked
+
+          ? `
+        <button data-action="toggleReady" data-value="${match.id}"
+          class="mt-6 w-full px-8 py-4 rounded-2xl font-black uppercase text-[10px]
+            ${myReady ? "bg-white/5 text-[#39FF14] border border-[#39FF14]/30" : "bg-[#39FF14] text-black"}">
+          ${myReady ? "Ready Confirmed" : "Confirm Ready"}
+        </button>`
+          : ""
+      }
+
+      <!-- SUBMIT SCORE -->
+      ${
+        canSubmit
+          ? `
+        <div class="mt-6 rounded-2xl border border-white/10 bg-black p-6">
+          <div class="text-center text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">
+            Submit Final Score
+          </div>
+
+          <div class="flex justify-center items-center gap-3">
+            <input id="scoreA" type="number" min="0"
+              class="w-20 text-center text-3xl font-black bg-black border border-white/10 rounded-xl p-3" />
+            <span class="text-xl font-black">:</span>
+            <input id="scoreB" type="number" min="0"
+              class="w-20 text-center text-3xl font-black bg-black border border-white/10 rounded-xl p-3" />
+          </div>
+
+          <button data-action="submitScore" data-value="${match.id}"
+            class="mt-4 w-full px-6 py-4 rounded-xl bg-[#39FF14] text-black font-black uppercase text-[10px]">
+            Submit Score
+          </button>
+        </div>`
+          : ""
+      }
+
+      <!-- CONFIRM / DISPUTE -->
+      ${
+        needsConfirm
+          ? `
+        <div class="mt-6 grid grid-cols-2 gap-3">
+          <button data-action="confirmScore" data-value="${match.id}"
+            class="px-6 py-4 rounded-xl bg-[#39FF14] text-black font-black uppercase text-[10px]">
+            Confirm
+          </button>
+
+          <button data-action="disputeScore" data-value="${match.id}"
+            class="px-6 py-4 rounded-xl bg-red-600 text-white font-black uppercase text-[10px]">
+            Dispute
+          </button>
+        </div>`
+          : ""
+      }
+
+      <!-- ADMIN DISPUTE RESOLUTION -->
+      ${
+        isAdmin(activeTournament()) && match.status === "disputed"
+          ? `
+        <div class="mt-6 p-4 rounded-xl border border-red-500/30 bg-red-500/10">
+          <div class="text-[10px] font-black uppercase tracking-widest text-red-400">
+            Admin Resolution
+          </div>
+
+          <div class="mt-3 flex gap-2">
+            <button data-action="resolveDispute"
+              data-mid="${match.id}"
+              data-guilty="${match.playerAId}"
+              class="px-4 py-2 bg-red-500 text-white rounded-lg text-xs font-black">
+              Strike ${esc(match.playerAName)}
             </button>
 
-            <div class="relative z-10 space-y-6">
-              <div class="text-center space-y-2">
-                <div class="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-white/10 bg-white/5 text-slate-400 text-[10px] font-black uppercase tracking-widest">
-                  ${Icon("shield","w-4 h-4 text-[#39FF14]")} Match Center
-                </div>
-                <div class="text-2xl md:text-3xl font-black italic uppercase tracking-tighter">
-                  ${esc(match.playerAName)} <span class="text-slate-700 mx-2">vs</span> ${esc(match.playerBName)}
-                </div>
-                <div class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-600">
-                  Status: ${esc(status.replaceAll("_"," "))}
-                </div>
-              </div>
-
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                ${MatchSide(match.playerAName, !!match.readyA, isA)}
-                ${MatchSide(match.playerBName, !!match.readyB, isB)}
-              </div>
-
-              ${isParticipant && status === "pending" ? `
-                <button data-action="toggleReady" data-value="${esc(match.id)}"
-                  class="${cn(
-                    "w-full px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all",
-                    myReady ? "bg-white/5 border border-[#39FF14]/30 text-[#39FF14]" : "bg-[#39FF14] text-black"
-                  )}">
-                  ${myReady ? "Ready confirmed" : "Confirm ready"}
-                </button>
-              ` : ""}
-
-              ${canSubmit ? `
-                <div class="rounded-[2rem] border border-white/10 bg-black p-6 space-y-4">
-                  <div class="text-center text-[10px] font-black uppercase tracking-widest text-slate-500">Submit final score</div>
-
-                  <div class="flex items-center justify-center gap-3">
-                    <input id="scoreA" type="number" min="0" value="${Number(match.score?.a||0)}"
-                      class="w-24 bg-[#0a0a0a] border border-white/10 rounded-2xl p-5 text-3xl font-black italic text-center outline-none focus:border-[#39FF14]" />
-                    <div class="text-slate-700 font-black text-2xl">:</div>
-                    <input id="scoreB" type="number" min="0" value="${Number(match.score?.b||0)}"
-                      class="w-24 bg-[#0a0a0a] border border-white/10 rounded-2xl p-5 text-3xl font-black italic text-center outline-none focus:border-[#39FF14]" />
-                  </div>
-
-                  <button data-action="submitScore" data-value="${esc(match.id)}"
-                    class="w-full px-8 py-4 rounded-2xl bg-white text-black font-black uppercase tracking-widest text-[10px] hover:bg-[#39FF14] transition-all">
-                    Submit
-                  </button>
-                </div>
-              ` : ""}
-
-              ${needsConfirm ? `
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <button data-action="confirmScore" data-value="${esc(match.id)}"
-                    class="px-8 py-4 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[10px]">
-                    ${Icon("check","w-4 h-4 inline-block -mt-0.5 mr-2")}Confirm
-                  </button>
-                  <button data-action="disputeScore" data-value="${esc(match.id)}"
-                    class="px-8 py-4 rounded-2xl bg-red-600 text-white font-black uppercase tracking-widest text-[10px]">
-                    ${Icon("shield","w-4 h-4 inline-block -mt-0.5 mr-2")}Dispute
-                  </button>
-                </div>
-              ` : ""}
-
-              ${(!isParticipant) ? `
-                <div class="rounded-2xl border border-white/10 bg-white/5 p-5 text-center text-slate-500 font-black uppercase tracking-widest text-[10px]">
-                  You are not part of this match
-                </div>
-              ` : ""}
-            </div>
+            <button data-action="resolveDispute"
+              data-mid="${match.id}"
+              data-guilty="${match.playerBId}"
+              class="px-4 py-2 bg-red-500 text-white rounded-lg text-xs font-black">
+              Strike ${esc(match.playerBName)}
+            </button>
           </div>
+        </div>`
+          : ""
+      }
+
+      <!-- MATCH CHAT -->
+      <div class="mt-6 rounded-2xl border border-white/10 bg-black p-4">
+        <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+          Match Chat
         </div>
-      `;
-    }
+
+        <div class="max-h-40 overflow-y-auto space-y-2 mb-3">
+          ${(state.matchChat || []).map(m => `
+            <div class="${m.fromUid === uid ? "text-right" : "text-left"}">
+              <div class="inline-block px-3 py-2 rounded-xl text-sm
+                ${m.fromUid === uid ? "bg-[#39FF14] text-black" : "bg-white/10 text-white"}">
+                <div class="text-[9px] font-black uppercase opacity-60">
+                  ${esc(m.fromName)}
+                </div>
+                <div>${esc(m.text)}</div>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+
+        <div class="flex gap-2">
+          <input id="matchChatInput"
+            class="flex-1 bg-black border border-white/10 rounded-xl px-3 py-2 text-white"
+            placeholder="Type message..." />
+          <button data-action="sendMatchChat"
+            data-value="${match.id}"
+            class="px-4 py-2 bg-[#39FF14] text-black font-black rounded-xl">
+            Send
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+  `;
+}
+
+function MatchdayLiveBanner() {
+  const live = state.matchdays?.find(m => m.started && !m.locked);
+  if (!live) return "";
+
+  return `
+    <div class="mb-4 rounded-xl bg-green-600 text-black px-4 py-3 font-black text-center">
+      🟢 Matchday ${live.number} LIVE
+    </div>
+  `;
+}
+
 
     function MatchSide(name, ready, isMe) {
       return `
@@ -2508,6 +2994,45 @@ function renderPaymentQR(t) {
   // 🔹 UPI DEEP LINK (opens app)
   upiBtn.href = upiUrl;
 }
+
+
+function subscribeSupportChat(tournamentId) {
+  if (!state.user || !tournamentId) return;
+
+  state.uiSupportReady = true;
+
+  const t = activeTournament();
+  const uid = state.user.uid;
+
+  // player -> own thread
+  // admin  -> selected player thread
+  const targetPlayerUid = isAdmin(t) ? state.uiSupportActiveId : uid;
+
+  if (!targetPlayerUid) {
+    state.supportMessages = [];
+    render();
+    return;
+  }
+
+  const threadRef = doc(db, "tournaments", tournamentId, "support_threads", targetPlayerUid);
+
+  const msgsQ = query(
+    collection(threadRef, "messages"),
+    orderBy("createdAt", "asc")
+  );
+
+  if (subs.support) { subs.support(); subs.support = null; }
+
+  subs.support = onSnapshot(msgsQ, (snap) => {
+    state.supportMessages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    render();
+  }, () => render());
+}
+
+
+
+
+
 
 
     /* =========================
@@ -2600,6 +3125,10 @@ if (state.showPaymentModal) {
           const action = el.getAttribute("data-action");
           const value = el.getAttribute("data-value");
 
+
+
+  
+
           try {
             if (action === "openAuth") { state.authModalOpen = true; render(); }
             if (action === "closeAuth") { state.authModalOpen = false; render(); }
@@ -2625,7 +3154,38 @@ if (state.showPaymentModal) {
 
             if (action === "exitTournament") { exitTournament(); }
 
-            if (action === "setTournamentTab") { state.tournamentTab = value; render(); }
+            if (action === "setTournamentTab") {
+  state.tournamentTab = value;
+
+  if (value === "Support") {
+    const t = activeTournament();
+    if (!t) return;
+
+    state.uiSupportReady = true;
+
+    // Admin: load thread list
+    subscribeSupportContext(t.id);
+
+    // Player: auto-load own chat
+    if (!isAdmin(t)) {
+      subscribeSupportChat(t.id);
+    }
+  }
+
+  render();
+}
+
+  if (action === "sendSupport") {
+      const t = activeTournament();
+      if (!t) return;
+
+      const input = document.getElementById("supportInput");
+      const msg = input?.value?.trim();
+      if (!msg) return;
+
+      await sendSupportMessage(t.id, msg);
+      input.value = "";
+    }
 
             if (action === "openProfileEdit") { state.showProfileEdit = true; render(); }
             if (action === "closeProfileEdit") { state.showProfileEdit = false; render(); }
@@ -2744,11 +3304,32 @@ if (state.showPaymentModal) {
             }
 
             if (action === "postAnnouncement") {
-              const t = activeTournament();
-              const content = document.getElementById("annDraft")?.value || "";
-              await postAnnouncement(t.id, content, "manual");
-              if (document.getElementById("annDraft")) document.getElementById("annDraft").value = "";
-            }
+  const text = document.getElementById("announcementText")?.value?.trim();
+  if (!text) {
+    toast("Empty announcement");
+    return;
+  }
+
+  const t = activeTournament();
+
+  await addDoc(
+    collection(db, "tournaments", t.id, "announcements"),
+    {
+      text: text,
+      createdAt: serverTimestamp(),     // ✅ ALWAYS server time
+      createdBy: state.user.uid,
+      createdByName:
+        state.profile?.playerName ||
+        state.user.displayName ||
+        "Organizer"
+    }
+  );
+
+  document.getElementById("announcementText").value = "";
+  toast("Announcement published");
+}
+
+
 
             if (action === "postAnnouncementAdmin") {
               const t = activeTournament();
@@ -2775,9 +3356,19 @@ if (state.showPaymentModal) {
             }
 
             if (action === "openMatch") {
-              state.uiMatchModal = value;
-              render();
-            }
+  state.uiMatchModal = value;
+  subscribeMatchChat(value);   // ✅ IMPORTANT
+  render();
+}
+if (action === "sendMatchChat") {
+  const text = document.getElementById("matchChatInput")?.value || "";
+  if (!text.trim()) return;
+
+  await sendMatchChat(value, text);
+  document.getElementById("matchChatInput").value = "";
+}
+
+
 
             if (action === "closeMatch") {
               state.uiMatchModal = null;
@@ -2807,23 +3398,31 @@ if (state.showPaymentModal) {
             }
 
             if (action === "openTicket") {
-              state.uiSupportActiveId = value;
-              render();
-            }
+  state.uiSupportActiveId = value;
+  subscribeSupportMessages(value);
+  render();
 
-            if (action === "sendSupport") {
-              const t = activeTournament();
-              const msg = document.getElementById("supportMsg")?.value || "";
-              const ticketId = value || null;
-              await sendSupportMessage(t.id, msg, ticketId);
-              if (document.getElementById("supportMsg")) document.getElementById("supportMsg").value = "";
-            }
+}
+
+
+
+
+
+
+if (action === "openSupportThread") {
+  const t = activeTournament();
+  if (!t) return;
+  subscribeAdminThread(t.id, value);
+}
+
+
 
             if (action === "print") window.print();
 
           } catch (err) {
             toast(err?.message || "Action failed");
           }
+/* COPY UPI */
 if (action === "copyUpi") {
   const t = activeTournament();
   if (!t?.upi) return toast("UPI not available");
@@ -2833,27 +3432,13 @@ if (action === "copyUpi") {
     .catch(() => toast("Copy failed"));
 }
 
+/* OPEN UPI APP */
 if (action === "openUPI") {
   const t = activeTournament();
   if (!t?.upi || !t?.entryFee) {
     toast("UPI not configured");
     return;
   }
-if (action === "openTicket") {
-  state.uiSupportActiveId = value;
-  subscribeSupportMessages(value);
-}
-
-
-if (action === "rejectParticipant") {
-  await updateDoc(doc(db, "participants", value), {
-    status: "rejected",
-    paymentStatus: "REJECTED",
-    rejectedAt: now()
-  });
-  toast("Payment rejected");
-}
-
 
   const upiUrl =
     `upi://pay?pa=${encodeURIComponent(t.upi)}` +
@@ -2864,9 +3449,72 @@ if (action === "rejectParticipant") {
   window.location.href = upiUrl;
 }
 
+if (action === "backSupportThreads") {
+  const t = activeTournament();
+  if (!t) return;
+  state.uiSupportActiveId = null;
+  state.uiSupportMessages = [];
+  state.uiSupportAdminView = "threads";
+  // re-subscribe threads list
+  subscribeSupportContext(t.id);
+  render();
+}
+
+if (action === "setTournamentTab" && value === "Support") {
+  const t = activeTournament();
+  if (!t) return;
+
+  // Admin should load thread list too
+  subscribeSupportContext(t.id);
+
+  // Player loads chat immediately
+  if (!isAdmin(t)) subscribeSupportChat(t.id);
+
+  render();
+}
+
+
+if (action === "sendSupport") {
+  const t = activeTournament();
+  if (!t) return;
+
+  const input = document.getElementById("supportInput");
+  const msg = input?.value?.trim();
+  if (!msg) return;
+
+  await sendSupportMessage(t.id, msg);
+  input.value = "";
+}
+
+
+
+if (action === "resolveDispute") {
+  const match = state.matches.find(m => m.id === el.dataset.mid);
+  const guilty = el.dataset.guilty;
+
+  const score = prompt("Enter final score (e.g. 2-1)");
+  if (match && score) {
+    resolveDispute(match, score, guilty);
+  }
+}
+
+
+
+/* REJECT PARTICIPANT */
+if (action === "rejectParticipant") {
+  await updateDoc(doc(db, "participants", value), {
+    status: "rejected",
+    paymentStatus: "REJECTED",
+    rejectedAt: now()
+  });
+  toast("Payment rejected");
+}
+
+
         };
       });
     }
+ 
 
     // Initial render
     render();
