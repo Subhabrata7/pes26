@@ -11,21 +11,243 @@
 
 
 
-  <style>
-    /* Small polish */
-    .no-scrollbar::-webkit-scrollbar { display:none; }
-    .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
-    @media print {
-      body { background:#fff !important; color:#000 !important; }
-      .print-hidden { display:none !important; }
-      .print-card { border:1px solid #ddd !important; background:#fff !important; }
-      .print-table th, .print-table td { padding:10px !important; }
+ <style>
+  /* =========================
+     MOBILE-SAFE MODAL SYSTEM
+  ========================= */
+
+  .modal-safe {
+    max-height: min(90dvh, calc(100vh - 2rem));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+
+    /* Safe areas (notch + home bar) */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: calc(env(safe-area-inset-bottom) + 5rem);
+  }
+
+  /* Prevent background scroll when modal open */
+  body.modal-open {
+    overflow: hidden;
+    touch-action: none;
+  }
+
+  /* Mobile adjustments */
+  @media (max-width: 640px) {
+    .modal-safe {
+      border-radius: 1.25rem !important;
+      padding-left: 1rem !important;
+      padding-right: 1rem !important;
     }
-  </style>
+  }
+
+  /* =========================
+     SCROLL POLISH
+  ========================= */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* =========================
+     PRINT
+  ========================= */
+  @media print {
+    body {
+      background: #fff !important;
+      color: #000 !important;
+    }
+    .print-hidden {
+      display: none !important;
+    }
+    .print-card {
+      border: 1px solid #ddd !important;
+      background: #fff !important;
+    }
+    .print-table th,
+    .print-table td {
+      padding: 10px !important;
+    }
+  }
+/* =========================
+   MATCHDAY LIVE ANIMATION
+========================= */
+
+@keyframes livePulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(57,255,20,0.6);
+    transform: scale(1);
+  }
+  70% {
+    box-shadow: 0 0 0 14px rgba(57,255,20,0);
+    transform: scale(1.04);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(57,255,20,0);
+    transform: scale(1);
+  }
+}
+
+.mobile-tab-live {
+  animation: livePulse 1.6s infinite;
+  background: rgba(57,255,20,0.15) !important;
+  color: #39FF14 !important;
+  border: 1px solid rgba(57,255,20,0.6);
+}
+
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+.animate-slideUp {
+  animation: slideUp .25s ease-out;
+}
+
+.nav-btn {
+  background: #111;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 1.5rem;
+  padding: 1rem 0;
+  color: white;
+  font-weight: 900;
+  font-size: .75rem;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+
+.nav-btn span {
+  font-size: .65rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.nav-btn:active {
+  background: #39FF14;
+  color: black;
+}
+
+
+
+/* =========================
+  NAV MENU ITEMS
+========================= */
+.nav-item {
+  padding: 14px 16px;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  color: white;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+}
+
+.nav-item:hover {
+  background: rgba(57,255,20,0.1);
+  color: #39FF14;
+}
+
+/* overlay visible */
+.nav-open #navOverlay,
+.nav-open #navMenu {
+  display: block;
+}
+
+body.nav-lock {
+  overflow: hidden;
+}
+
+/* ===============================
+   MOBILE NAV POLISH (FIX-4)
+   Desktop unaffected
+================================ */
+
+@media (max-width: 768px) {
+
+  body.nav-open {
+    overflow: hidden; /* lock background scroll */
+  }
+
+  #navOverlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    backdrop-filter: blur(6px);
+    z-index: 90;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+
+  #navOverlay.show {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  #navMenu {
+    position: fixed;
+    top: 64px;
+    right: 12px;
+    width: calc(100% - 24px);
+    max-width: 360px;
+    z-index: 100;
+
+    transform: translateY(-12px) scale(0.98);
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.25s ease;
+  }
+
+  #navMenu.open {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .nav-item {
+    width: 100%;
+    text-align: left;
+    padding: 14px 16px;
+    font-weight: 800;
+    letter-spacing: .04em;
+  }
+}
+
+
+</style>
+
 </head>
 
 <body class="bg-[#050505] text-slate-100 selection:bg-[#39FF14] selection:text-black">
   <div id="app"></div>
+<!-- =========================
+  TOP MOBILE NAV BAR
+========================= -->
+<div class="fixed top-0 left-0 right-0 z-[150]
+            h-14 px-4 flex items-center justify-between
+            bg-black/80 backdrop-blur border-b border-white/10">
+
+  <div class="flex items-center gap-2">
+    <div class="w-8 h-8 rounded-full bg-[#39FF14] text-black font-black flex items-center justify-center">
+      🏆
+    </div>
+    <span class="text-xs font-black uppercase tracking-widest text-white">
+      PES ARENA
+    </span>
+  </div>
+
+  <button id="hamburgerBtn"
+    class="w-10 h-10 rounded-lg bg-white/5 border border-white/10
+           text-white text-xl font-black">
+    ☰
+  </button>
+</div>
 
   <!-- Firebase + App -->
   <script type="module">
@@ -143,6 +365,8 @@ matchChat: [],
 
   // Announcements
   announcements: [],
+inAdminPanel: false,
+
 
   // SUPPORT (FINAL – no tickets, no channels)
     // SUPPORT (1-to-1: player <-> admin)
@@ -193,10 +417,17 @@ myTournaments: [],
       return (t.ownerId === state.user.uid) || (Array.isArray(t.adminIds) && t.adminIds.includes(state.user.uid));
     }
 
-    function isRegistered(t) {
-      if (!t || !state.user) return false;
-      return Array.isArray(t.participants) && t.participants.includes(state.user.uid);
-    }
+function isRegistered(t) {
+  if (!t || !state.user) return false;
+  return Array.isArray(t.participants) && t.participants.includes(state.user.uid);
+}
+
+    function hasJoinedTournament(tid) {
+  return state.myJoinedTournamentIds.includes(tid);
+}
+
+
+
 
     function profileComplete() {
       return !!(state.profile && state.profile.isComplete);
@@ -507,11 +738,13 @@ subscribeMyTournaments();
 
 
     function exitTournament() {
-      state.activeTournamentId = null;
-      state.tournamentTab = "Home";
-      unsubscribeAllTournamentStreams();
-      render();
-    }
+  state.activeTournamentId = null;
+  state.tournamentTab = "Home";
+  state.inAdminPanel = false; // 🔥 IMPORTANT
+  unsubscribeAllTournamentStreams();
+  render();
+}
+
 
     async function saveProfile(form) {
       if (!state.user) return;
@@ -567,6 +800,19 @@ subscribeMyTournaments();
     }
 
     async function requestJoinTournament(t) {
+ const uid = state.user?.uid;
+  if (!uid) throw new Error("Not logged in");
+
+  // 🔒 FINAL CLIENT CHECK
+  const existing = state.participants.find(p =>
+    p.userId === uid &&
+    p.tournamentId === t.id &&
+    ["pending", "approved", "joined"].includes(p.status)
+  );
+
+  if (existing) {
+    throw new Error("You have already applied for this tournament");
+  }
       if (!state.user || !t) return;
 
       // gating
@@ -610,55 +856,75 @@ subscribeMyTournaments();
   async function finalizeJoin(t, utr) {
   if (!state.user || !t) return;
 
-  // 🔒 Prevent expired payment
-  if (Date.now() > state.paymentExpiresAt) {
-    toast("Payment expired. Please retry.");
+  const uid = state.user.uid;
+  const pid = `${uid}_${t.id}`; // 🔒 FIXED & UNIQUE
+
+  // ⛔ FINAL SAFETY: if already exists, block
+  const exists = state.participants.find(p =>
+    p.id === pid ||
+    (p.userId === uid && p.tournamentId === t.id)
+  );
+
+  if (exists) {
+    toast("You have already applied or joined");
+    state.showPaymentModal = false;
     return;
   }
 
-  // 🔐 STRICT UTR VALIDATION (12–22 digits only)
-  if (!/^\d{12,22}$/.test(utr)) {
-    toast("Invalid UTR format");
-    return;
+  // 🔐 Paid validation
+  if (t.type === "Paid") {
+    if (!state.paymentExpiresAt || Date.now() > state.paymentExpiresAt) {
+      toast("Payment expired");
+      return;
+    }
+
+    if (!/^\d{12,22}$/.test(utr || "")) {
+      toast("Invalid UTR format");
+      return;
+    }
   }
 
   state.loadingAction = true;
   render();
 
   try {
-    // prevent double join
-    if (isRegistered(t)) {
-      toast("Already registered");
-      return;
-    }
+    await setDoc(
+      doc(db, "participants", pid), // 🔒 FIXED DOC ID
+      {
+        tournamentId: t.id,
+        userId: uid,
+        playerName: state.profile?.playerName || state.user.displayName || "Player",
+        gameName: state.profile?.gameName || "",
+        platform: state.profile?.platform || "Mobile",
 
-    const p = state.profile || {};
+        status: t.type === "Paid" ? "pending" : "approved",
+        paid: t.type === "Paid",
+        utr: t.type === "Paid" ? utr : null,
+        paymentStatus: t.type === "Paid" ? "PENDING" : "FREE",
 
-    await addDoc(collection(db, "participants"), {
-      tournamentId: t.id,
-      userId: state.user.uid,
-      playerName: p.playerName || state.user.displayName || "Player",
-      gameName: p.gameName || "",
-      platform: p.platform || "Mobile",
+        createdAt: serverTimestamp()
+      }
+    );
 
-      status: "pending",              // ⏳ WAITING ADMIN
-      paid: true,
-      utr: utr,
-      verified: false,
+    toast(
+      t.type === "Paid"
+        ? "Payment submitted. Awaiting approval."
+        : "Joined successfully"
+    );
 
-      createdAt: now()
-    });
-
-    toast("Payment submitted. Awaiting admin approval.");
     state.showPaymentModal = false;
+    state.paymentUTR = "";
+    state.paymentExpiresAt = null;
 
   } catch (e) {
-    toast("Join failed");
+    toast(e.message || "Join failed");
   } finally {
     state.loadingAction = false;
     render();
   }
 }
+
+
 
 
 
@@ -695,29 +961,76 @@ subscribeMyTournaments();
       }
     }
 
-    async function postAnnouncement(tid, content, type="manual") {
-  if (!tid || !content.trim() || !state.user) return;
+   async function postAnnouncement(tid, text, type = "manual") {
+  if (!tid || !text?.trim() || !state.user) return;
 
-  state.loadingAction = true; render();
+  state.loadingAction = true;
+  render();
+
   try {
     await addDoc(
       collection(db, "tournaments", tid, "announcements"),
       {
-        content: content.trim(),
+        text: text.trim(),
+
+        // 🔑 FIX-1: dual timestamps
+        createdAt: serverTimestamp(),   // Firestore ordering
+        createdAtMs: Date.now(),        // UI display (stable)
+
         type,
-        createdAt: serverTimestamp(),
         createdBy: state.user.uid,
-        createdByName: state.user.displayName || state.profile?.playerName || "Organizer"
+        createdByName:
+          state.profile?.playerName ||
+          state.user.displayName ||
+          "Organizer"
       }
     );
+
     toast("Announcement sent");
   } catch (e) {
     console.error(e);
     toast(e?.message || "Announcement failed");
   } finally {
-    state.loadingAction = false; render();
+    state.loadingAction = false;
+    render();
   }
 }
+
+
+function AdminMobileTabs(tabs, active) {
+  return `
+    <div class="flex overflow-x-auto no-scrollbar gap-2">
+      ${tabs.map(t => `
+        <button
+          data-action="setAdminTab"
+          data-value="${t}"
+          class="px-4 py-2 rounded-xl
+            text-[10px] font-black uppercase tracking-widest whitespace-nowrap
+            ${active === t
+              ? "bg-[#39FF14] text-black"
+              : "bg-white/5 text-slate-400"}">
+          ${t}
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+/* =========================
+   MOBILE NAV CONTROL
+========================= */
+
+
+/* OVERLAY CLICK CLOSE */
+document.getElementById("mobileOverlay")?.addEventListener("click", closeMobileNav);
+
+/* AUTO CLOSE ON ANY NAV BUTTON */
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".nav-btn");
+  if (btn) closeMobileNav();
+});
+
+
 
 
     /* =========================
@@ -1202,7 +1515,7 @@ async function checkAndEndMatchdays(tournamentId) {
        7) STANDINGS (computed)
     ========================= */
     function computeStandings() {
-      const ps = state.participants.filter(p => p.status === "approved" || p.status === "pending" || p.status === "banned");
+      const ps = state.participants.filter(p => p.status === "approved");
       const rows = ps.map(p => ({
         userId: p.userId,
         name: p.playerName || "Player",
@@ -1460,44 +1773,62 @@ async function checkAndEndMatchdays(tournamentId) {
     }
 
     function TournamentLayout(t, inner) {
-      const admin = isAdmin(t);
-      const tabs = TOURNEY_TABS.filter(x => x !== "Admin" || admin);
+  const admin = isAdmin(t);
+  const tabs = TOURNEY_TABS.filter(x => x !== "Admin" || admin);
+  const isAdminView = state.tournamentTab === "Admin";
 
-      return `
-        ${TopShellBar()}
-        <div class="sticky top-16 z-40 bg-[#0a0a0a]/85 backdrop-blur-xl border-b border-white/10 print-hidden">
-          <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3 justify-between">
-            <div class="min-w-0">
-              <div class="text-[12px] font-black uppercase tracking-widest text-slate-400">Tournament</div>
-              <div class="text-lg font-black italic uppercase tracking-tighter truncate">${esc(t?.name||"Tournament")}</div>
-            </div>
+  return `
+    ${TopShellBar()}
 
-            <button data-action="exitTournament" class="px-4 py-2 rounded-xl border border-white/10 bg-white/5 text-slate-200 font-black uppercase tracking-widest text-[10px] hover:border-[#39FF14]/30">
-              Exit
-            </button>
+    <!-- TOURNAMENT HEADER -->
+    <div class="sticky top-16 z-40 bg-[#0a0a0a]/85 backdrop-blur-xl border-b border-white/10 print-hidden">
+      <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div class="min-w-0">
+          <div class="text-[12px] font-black uppercase tracking-widest text-slate-400">
+            ${isAdminView ? "Admin Panel" : "Tournament"}
           </div>
-
-          <div class="max-w-7xl mx-auto px-4 pb-3">
-            <div class="flex overflow-x-auto no-scrollbar gap-2">
-              ${tabs.map(tab => `
-                <button data-action="setTournamentTab" data-value="${esc(tab)}"
-                  class="${cn(
-                    "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap border transition-all",
-                    state.tournamentTab===tab ? "bg-[#39FF14] text-black border-[#39FF14]" : "bg-white/5 text-slate-500 border-white/10 hover:text-slate-200"
-                  )}">
-                  ${esc(tab)}
-                </button>
-              `).join("")}
-            </div>
+          <div class="text-lg font-black italic uppercase tracking-tighter truncate">
+            ${esc(t?.name || "Tournament")}
           </div>
         </div>
 
-        <main class="max-w-7xl mx-auto p-4 md:p-8 pb-28">
-          ${inner}
-        </main>
-        ${ToastUI()}
-      `;
-    }
+        <button data-action="exitTournament"
+          class="px-4 py-2 rounded-xl border border-white/10 bg-white/5
+                 text-slate-200 font-black uppercase tracking-widest text-[10px]">
+          Exit
+        </button>
+      </div>
+
+      <!-- 🔴 HIDE TOURNAMENT TABS WHEN ADMIN -->
+      ${!isAdminView ? `
+        <div class="max-w-7xl mx-auto px-4 pb-3">
+          <div class="hidden sm:flex overflow-x-auto no-scrollbar gap-2">
+            ${tabs.map(tab => `
+              <button data-action="setTournamentTab" data-value="${esc(tab)}"
+                class="${cn(
+                  "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.18em] whitespace-nowrap border",
+                  state.tournamentTab===tab
+                    ? "bg-[#39FF14] text-black border-[#39FF14]"
+                    : "bg-white/5 text-slate-500 border-white/10 hover:text-slate-200"
+                )}">
+                ${esc(tab)}
+              </button>
+            `).join("")}
+          </div>
+        </div>
+      ` : ``}
+    </div>
+
+    <!-- CONTENT -->
+    <main class="max-w-7xl mx-auto p-4 md:p-8 pb-28 mobile-safe-padding">
+      ${inner}
+    </main>
+
+       ${ToastUI()}
+  `;
+}
+
+
 
     function SponsorBannerUI(t) {
       const sponsors = Array.isArray(t?.sponsors) ? t.sponsors : [];
@@ -1839,6 +2170,25 @@ async function checkAndEndMatchdays(tournamentId) {
       `;
     }
 
+function MatchdayLiveBanner() {
+  const live = state.matchdays?.find(m => m.started === true && m.locked !== true);
+  if (!live) return "";
+
+  return `
+    <div class="mb-6 rounded-2xl
+      bg-[#39FF14]/20
+      border border-[#39FF14]/40
+      text-[#39FF14]
+      px-6 py-4
+      font-black
+      text-center
+      uppercase
+      tracking-widest
+      animate-pulse">
+      🟢 Matchday ${live.number} LIVE
+    </div>
+  `;
+}
 
 
 
@@ -1894,34 +2244,83 @@ ${MatchdayLiveBanner()}
       `;
     }
 
-    function JoinPanel(t, full) {
-      if (t.status !== "Registration Open") {
-        return `<div class="rounded-2xl px-8 py-6 text-center font-black uppercase tracking-[0.35em] text-[10px] bg-white/5 border border-white/10 text-slate-500">Registration closed</div>`;
-      }
-      if (full) {
-        return `<div class="rounded-2xl px-8 py-6 text-center font-black uppercase tracking-[0.35em] text-[10px] bg-white/5 border border-white/10 text-slate-500">Tournament full</div>`;
-      }
-      if (!profileComplete()) {
-        return `
-          <div class="rounded-[2rem] border border-orange-500/20 bg-orange-500/5 p-8 text-center space-y-4">
-            <div class="text-orange-400 font-black uppercase tracking-[0.35em] text-[10px]">Profile incomplete</div>
-            <div class="text-slate-400 font-bold">Complete your profile to join tournaments.</div>
-            <button data-action="gotoProfile" class="px-10 py-4 rounded-2xl bg-white text-black font-black uppercase tracking-widest text-[10px]">
-              Complete Profile
-            </button>
-          </div>
-        `;
-      }
-      return `
-        <div class="text-center space-y-5">
-          <div class="text-slate-400 font-bold">You are not registered in this tournament.</div>
-          <button data-action="joinTournament" class="px-12 py-6 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-[0.35em] text-[11px] shadow-[0_0_35px_rgba(57,255,20,0.25)] hover:scale-[1.02] transition-transform">
-            Join ${t.type==="Paid" ? `(INR ${Number(t.entryFee||0)})` : ""}
-          </button>
-          ${t.type==="Paid" ? `<div class="text-[10px] font-black uppercase tracking-widest text-slate-600">Payment UTR will be collected before join request</div>` : ""}
+  function JoinPanel(t, full) {
+  const uid = state.user?.uid;
+
+  const already = state.participants.find(p =>
+    p.userId === uid &&
+    p.tournamentId === t.id &&
+    ["pending", "approved"].includes(p.status)
+  );
+
+  if (already) {
+    return `
+      <div class="rounded-2xl px-8 py-6 text-center
+        font-black uppercase tracking-[0.35em] text-[10px]
+        bg-[#39FF14]/10 border border-[#39FF14]/30 text-[#39FF14]">
+        ${already.status === "pending"
+          ? "Application Submitted (Pending Approval)"
+          : "Already Joined"}
+      </div>
+    `;
+  }
+
+  if (t.status !== "Registration Open") {
+    return `
+      <div class="rounded-2xl px-8 py-6 text-center
+        font-black uppercase tracking-[0.35em] text-[10px]
+        bg-white/5 border border-white/10 text-slate-500">
+        Registration Closed
+      </div>
+    `;
+  }
+
+  if (full) {
+    return `
+      <div class="rounded-2xl px-8 py-6 text-center
+        font-black uppercase tracking-[0.35em] text-[10px]
+        bg-white/5 border border-white/10 text-slate-500">
+        Tournament Full
+      </div>
+    `;
+  }
+
+  if (!profileComplete()) {
+    return `
+      <div class="rounded-[2rem] border border-orange-500/20 bg-orange-500/5 p-8 text-center space-y-4">
+        <div class="text-orange-400 font-black uppercase tracking-[0.35em] text-[10px]">
+          Profile Incomplete
         </div>
-      `;
-    }
+        <div class="text-slate-400 font-bold">
+          Complete your profile to join tournaments.
+        </div>
+        <button data-action="gotoProfile"
+          class="px-10 py-4 rounded-2xl bg-white text-black font-black uppercase tracking-widest text-[10px]">
+          Complete Profile
+        </button>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="text-center space-y-5">
+      <div class="text-slate-400 font-bold">
+        You are not registered in this tournament.
+      </div>
+
+      <button
+        data-action="joinTournament"
+        class="px-12 py-6 rounded-2xl bg-[#39FF14] text-black
+               font-black uppercase tracking-[0.35em] text-[11px]
+               shadow-[0_0_35px_rgba(57,255,20,0.25)]
+               hover:scale-[1.02] transition-transform">
+        Join ${t.type === "Paid" ? `(INR ${Number(t.entryFee || 0)})` : ""}
+      </button>
+    </div>
+  `;
+}
+
+
 
     function Stat(label, value) {
       return `
@@ -1931,6 +2330,17 @@ ${MatchdayLiveBanner()}
         </div>
       `;
     }
+
+function isMatchdayLive(t) {
+  if (!t) return false;
+
+  // supports both patterns
+  if (t.currentMatchdayStatus === "LIVE") return true;
+  if (state.activeMatchdayLive === true) return true;
+
+  return false;
+}
+
 
     function TabPlayers(t) {
       const mode = t.mode || "Normal";
@@ -2183,6 +2593,17 @@ ${MatchdayLiveBanner()}
     function TabAnnouncements(t) {
   const canPost = isAdmin(t);
 
+  // 🧠 Unified text resolver
+  const getText = (a) =>
+    (a?.text ?? a?.content ?? a?.message ?? "").toString();
+
+  // 🕒 Unified time resolver
+  const getTime = (a) => {
+    if (a?.createdAtMs) return new Date(a.createdAtMs);
+    if (a?.createdAt?.toDate) return a.createdAt.toDate();
+    return null;
+  };
+
   return `
     <div class="space-y-6">
 
@@ -2203,19 +2624,18 @@ ${MatchdayLiveBanner()}
         ${
           state.announcements.length
             ? state.announcements.map(a => {
-                const ts =
-                  a.createdAt?.toDate
-                    ? a.createdAt.toDate()
-                    : null;
+                const dt = getTime(a);
+                const who = a.createdByName || "Organizer";
+                const msg = getText(a);
 
                 return `
                   <div class="rounded-xl border border-white/10 bg-white/5 p-4">
                     <div class="text-[10px] text-slate-400 font-black uppercase tracking-widest">
-                      ${ts ? ts.toLocaleString() : "Sending..."}
-                      • ${esc(a.createdByName || "Organizer")}
+                      ${dt ? dt.toLocaleString() : "Posting..."}
+                      • ${esc(who)}
                     </div>
                     <div class="mt-2 text-white font-bold">
-                      ${esc(a.text)}
+                      ${esc(msg)}
                     </div>
                   </div>
                 `;
@@ -2231,6 +2651,8 @@ ${MatchdayLiveBanner()}
     </div>
   `;
 }
+
+
 
 
 
@@ -2368,42 +2790,56 @@ function SupportChatBox() {
 
 
     function TabAdmin(t) {
-      if (!isAdmin(t)) {
-        return `<div class="py-24 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">Admin access only</div>`;
-      }
+  if (!isAdmin(t)) {
+    return `<div class="py-24 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">
+      Admin access only
+    </div>`;
+  }
 
-      const adminSub = state.uiAdminTab || "Participants";
-      const subTabs = ["Participants","Fixtures","Announcements","Permissions","Disputes"];
+  const section = state.uiAdminTab || "Participants";
 
-      return `
-        <div class="space-y-8">
-          <div class="border-l-4 border-[#39FF14] pl-6">
-            <h2 class="text-3xl font-black italic uppercase tracking-tighter">Admin</h2>
-            <p class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-500 mt-2">Tournament controls</p>
-          </div>
+  const NAV = ["Participants", "Fixtures", "Announcements", "Disputes", "Permissions"];
 
-          <div class="rounded-2xl border border-white/10 bg-white/5 p-2 print-hidden">
-            <div class="flex overflow-x-auto no-scrollbar gap-2">
-              ${subTabs.map(x => `
-                <button data-action="setAdminTab" data-value="${esc(x)}"
-                  class="${cn(
-                    "px-5 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all whitespace-nowrap",
-                    adminSub===x ? "bg-[#39FF14] text-black border-[#39FF14]" : "bg-black/60 text-slate-400 border-white/10 hover:text-slate-200"
-                  )}">${esc(x)}</button>
-              `).join("")}
-            </div>
-          </div>
+  return `
+    <div class="flex gap-6">
 
-          <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
-            ${adminSub==="Participants" ? AdminParticipantsUI(t) : ""}
-            ${adminSub==="Fixtures" ? AdminFixturesUI(t) : ""}
-            ${adminSub==="Announcements" ? AdminAnnouncementsUI(t) : ""}
-            ${adminSub==="Permissions" ? AdminPermissionsUI(t) : ""}
-            ${adminSub==="Disputes" ? AdminDisputesUI(t) : ""}
-          </div>
+      <!-- SIDE NAV -->
+      <aside class="w-56 shrink-0 hidden md:block">
+        <div class="rounded-2xl border border-white/10 bg-[#0a0a0a] p-3 space-y-1">
+          ${NAV.map(x => `
+            <button
+              data-action="setAdminTab"
+              data-value="${x}"
+              class="w-full text-left px-4 py-3 rounded-xl
+                text-[10px] font-black uppercase tracking-widest
+                ${section === x
+                  ? "bg-[#39FF14] text-black"
+                  : "bg-white/5 text-slate-400 hover:text-white"}">
+              ${x}
+            </button>
+          `).join("")}
         </div>
-      `;
-    }
+      </aside>
+
+      <!-- CONTENT -->
+      <!-- CONTENT -->
+<section class="flex-1">
+
+  <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-6 md:p-10 shadow-2xl">
+    ${section === "Participants" ? AdminParticipantsUI(t) : ""}
+    ${section === "Fixtures" ? AdminFixturesUI(t) : ""}
+    ${section === "Announcements" ? AdminAnnouncementsUI(t) : ""}
+    ${section === "Disputes" ? AdminDisputesUI(t) : ""}
+    ${section === "Permissions" ? AdminPermissionsUI(t) : ""}
+  </div>
+
+</section>
+
+
+    </div>
+  `;
+}
+
 
     function AdminParticipantsUI(t) {
   const list = state.participants;
@@ -2926,14 +3362,17 @@ async function sendMatchChat(matchId, text) {
 
 
    function MatchCenterModal(match) {
+  if (!match) return "";
+
   const user = state.user;
+  const uid = user?.uid;
   const status = match.status || "pending";
 
-  const myParticipant = state.participants.find(p => p.userId === user?.uid);
+  const myParticipant = state.participants.find(p => p.userId === uid);
   const isParticipant = !!myParticipant;
 
-  const isA = match.playerAId === user?.uid;
-  const isB = match.playerBId === user?.uid;
+  const isA = match.playerAId === uid;
+  const isB = match.playerBId === uid;
 
   const myReady = isA ? match.readyA : isB ? match.readyB : false;
   const otherReady = isA ? match.readyB : isB ? match.readyA : false;
@@ -2950,34 +3389,17 @@ async function sendMatchChat(matchId, text) {
   const needsConfirm =
     isParticipant &&
     status === "pending_confirmation" &&
-    match.submittedBy !== user?.uid;
+    match.submittedBy !== uid;
 
   return `
   <div class="fixed inset-0 z-[140] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4">
-    <div class="
-  w-full max-w-2xl
-  rounded-[2.8rem]
-  border border-[#39FF14]/20
-  bg-[#0a0a0a]
-  p-6
-  pb-24
-  modal-safe
-  shadow-2xl
-  relative
-">
+    <div class="w-full max-w-2xl rounded-[2.8rem] border border-[#39FF14]/20 bg-[#0a0a0a] p-6 pb-24 modal-safe shadow-2xl relative">
 
-
-      <!-- CLOSE -->
       <button data-action="closeMatch"
-        class="absolute top-6 right-6 p-3 rounded-xl border border-white/10 bg-white/5 text-white">
-        ✕
-      </button>
+        class="absolute top-6 right-6 p-3 rounded-xl border border-white/10 bg-white/5 text-white">✕</button>
 
-      <!-- HEADER -->
       <div class="text-center space-y-2">
-        <div class="text-[10px] font-black uppercase tracking-widest text-[#39FF14]">
-          Match Center
-        </div>
+        <div class="text-[10px] font-black uppercase tracking-widest text-[#39FF14]">Match Center</div>
         <div class="text-2xl font-black italic uppercase">
           ${esc(match.playerAName)} vs ${esc(match.playerBName)}
         </div>
@@ -2986,169 +3408,122 @@ async function sendMatchChat(matchId, text) {
         </div>
       </div>
 
-      <!-- PLAYERS -->
       <div class="grid grid-cols-2 gap-4 mt-6">
         ${MatchSide(match.playerAName, match.readyA, isA)}
         ${MatchSide(match.playerBName, match.readyB, isB)}
       </div>
 
-${locked ? `
-  <div class="mt-6 text-center text-red-400 text-xs font-black uppercase tracking-widest">
-    🔒 Matchday locked
-  </div>
-` : ""}
+      ${locked ? `
+        <div class="mt-6 text-center text-red-400 text-xs font-black uppercase tracking-widest">
+          🔒 Matchday locked
+        </div>` : ""}
 
-      <!-- READY -->
-      ${
-       isParticipant && status === "pending" && !locked
-
-          ? `
+      ${isParticipant && status === "pending" && !locked ? `
         <button data-action="toggleReady" data-value="${match.id}"
           class="mt-6 w-full px-8 py-4 rounded-2xl font-black uppercase text-[10px]
-            ${myReady ? "bg-white/5 text-[#39FF14] border border-[#39FF14]/30" : "bg-[#39FF14] text-black"}">
+          ${myReady ? "bg-white/5 text-[#39FF14] border border-[#39FF14]/30" : "bg-[#39FF14] text-black"}">
           ${myReady ? "Ready Confirmed" : "Confirm Ready"}
-        </button>`
-          : ""
-      }
+        </button>` : ""}
 
-      <!-- SUBMIT SCORE -->
-      ${
-        canSubmit
-          ? `
+      ${canSubmit ? `
         <div class="mt-6 rounded-2xl border border-white/10 bg-black p-6">
           <div class="text-center text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">
             Submit Final Score
           </div>
 
-          <div class="flex justify-center items-center gap-3">
+          <div class="flex justify-center gap-3">
             <input id="scoreA" type="number" min="0"
-              class="w-20 text-center text-3xl font-black bg-black border border-white/10 rounded-xl p-3" />
+              class="w-20 text-center text-3xl font-black bg-black border border-white/10 rounded-xl p-3"/>
             <span class="text-xl font-black">:</span>
             <input id="scoreB" type="number" min="0"
-              class="w-20 text-center text-3xl font-black bg-black border border-white/10 rounded-xl p-3" />
+              class="w-20 text-center text-3xl font-black bg-black border border-white/10 rounded-xl p-3"/>
           </div>
 
           <button data-action="submitScore" data-value="${match.id}"
             class="mt-4 w-full px-6 py-4 rounded-xl bg-[#39FF14] text-black font-black uppercase text-[10px]">
             Submit Score
           </button>
-        </div>`
-          : ""
-      }
+        </div>` : ""}
 
-      <!-- CONFIRM / DISPUTE -->
-      ${
-        needsConfirm
-          ? `
+      ${needsConfirm ? `
         <div class="mt-6 grid grid-cols-2 gap-3">
           <button data-action="confirmScore" data-value="${match.id}"
             class="px-6 py-4 rounded-xl bg-[#39FF14] text-black font-black uppercase text-[10px]">
             Confirm
           </button>
-
           <button data-action="disputeScore" data-value="${match.id}"
             class="px-6 py-4 rounded-xl bg-red-600 text-white font-black uppercase text-[10px]">
             Dispute
           </button>
-        </div>`
-          : ""
-      }
+        </div>` : ""}
 
-      <!-- ADMIN DISPUTE RESOLUTION -->
-      ${
-        isAdmin(activeTournament()) && match.status === "disputed"
-          ? `
-        <div class="mt-6 p-4 rounded-xl border border-red-500/30 bg-red-500/10">
-          <div class="text-[10px] font-black uppercase tracking-widest text-red-400">
-            Admin Resolution
+      ${(isA || isB || isAdmin(activeTournament())) ? `
+        <div class="mt-6 rounded-2xl border border-white/10 bg-black p-4">
+          <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+            Match Chat (Private)
           </div>
 
-          <div class="mt-3 flex gap-2">
-            <button data-action="resolveDispute"
-              data-mid="${match.id}"
-              data-guilty="${match.playerAId}"
-              class="px-4 py-2 bg-red-500 text-white rounded-lg text-xs font-black">
-              Strike ${esc(match.playerAName)}
-            </button>
-
-            <button data-action="resolveDispute"
-              data-mid="${match.id}"
-              data-guilty="${match.playerBId}"
-              class="px-4 py-2 bg-red-500 text-white rounded-lg text-xs font-black">
-              Strike ${esc(match.playerBName)}
-            </button>
-          </div>
-        </div>`
-          : ""
-      }
-
-      <!-- MATCH CHAT -->
-      <div class="mt-6 rounded-2xl border border-white/10 bg-black p-4">
-        <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
-          Match Chat
-        </div>
-
-        <div class="max-h-[30vh] overflow-y-auto space-y-2 mb-3">
-          ${(state.matchChat || []).map(m => `
-            <div class="${m.fromUid === uid ? "text-right" : "text-left"}">
-              <div class="inline-block px-3 py-2 rounded-xl text-sm
-                ${m.fromUid === uid ? "bg-[#39FF14] text-black" : "bg-white/10 text-white"}">
-                <div class="text-[9px] font-black uppercase opacity-60">
-                  ${esc(m.fromName)}
+          <div class="max-h-[30vh] overflow-y-auto space-y-2 mb-3">
+            ${(state.matchChat || []).map(m => `
+              <div class="${m.fromUid === uid ? "text-right" : "text-left"}">
+                <div class="inline-block px-3 py-2 rounded-xl text-sm
+                  ${m.fromUid === uid ? "bg-[#39FF14] text-black" : "bg-white/10 text-white"}">
+                  <div class="text-[9px] font-black uppercase opacity-60">
+                    ${esc(m.fromName)}
+                  </div>
+                  <div>${esc(m.text)}</div>
                 </div>
-                <div>${esc(m.text)}</div>
-              </div>
-            </div>
-          `).join("")}
-        </div>
+              </div>`).join("")}
+          </div>
 
-        <div class="flex gap-2">
-          <input id="matchChatInput"
-            class="flex-1 bg-black border border-white/10 rounded-xl px-3 py-2 text-white"
-            placeholder="Type message..." />
-          <button data-action="sendMatchChat"
-            data-value="${match.id}"
-            class="px-4 py-2 bg-[#39FF14] text-black font-black rounded-xl">
-            Send
-          </button>
-        </div>
-      </div>
+          <div class="flex gap-2">
+            <input id="matchChatInput"
+              class="flex-1 bg-black border border-white/10 rounded-xl px-3 py-2 text-white"
+              placeholder="Type message..." />
+            <button data-action="sendMatchChat" data-value="${match.id}"
+              class="px-4 py-2 bg-[#39FF14] text-black font-black rounded-xl">
+              Send
+            </button>
+          </div>
+        </div>` : `
+        <div class="mt-6 text-center text-slate-600 text-xs font-black uppercase tracking-widest">
+          Match chat is private
+        </div>`}
 
     </div>
-  </div>
-  `;
+  </div>`;
 }
 
-function MatchdayLiveBanner() {
-  const live = state.matchdays?.find(m => m.started && !m.locked);
-  if (!live) return "";
-
+function MatchSide(name, ready, isMe) {
   return `
-    <div class="mb-4 rounded-xl bg-green-600 text-black px-4 py-3 font-black text-center">
-      🟢 Matchday ${live.number} LIVE
+    <div class="${cn(
+      "rounded-[2rem] border p-6 text-center space-y-2",
+      ready ? "border-[#39FF14]/25 bg-[#39FF14]/5" : "border-white/10 bg-white/5"
+    )}">
+      <div class="${cn("font-black uppercase italic text-sm", isMe ? "text-[#39FF14]" : "text-slate-300")}">
+        ${esc(name)} ${isMe ? "(You)" : ""}
+      </div>
+      <div class="flex items-center justify-center gap-2">
+        <span class="${cn(
+          "w-2 h-2 rounded-full",
+          ready ? "bg-[#39FF14] shadow-[0_0_10px_#39FF14]" : "bg-slate-700"
+        )}"></span>
+        <span class="${cn(
+          "text-[9px] font-black uppercase tracking-widest",
+          ready ? "text-[#39FF14]" : "text-slate-500"
+        )}">
+          ${ready ? "Locked in" : "Waiting"}
+        </span>
+      </div>
     </div>
   `;
 }
 
 
-    function MatchSide(name, ready, isMe) {
-      return `
-        <div class="${cn(
-          "rounded-[2rem] border p-6 text-center space-y-2",
-          ready ? "border-[#39FF14]/25 bg-[#39FF14]/5" : "border-white/10 bg-white/5"
-        )}">
-          <div class="${cn("font-black uppercase italic text-sm", isMe ? "text-[#39FF14]" : "text-slate-300")}">
-            ${esc(name)} ${isMe ? "(You)" : ""}
-          </div>
-          <div class="flex items-center justify-center gap-2">
-            <span class="${cn("w-2 h-2 rounded-full", ready ? "bg-[#39FF14] shadow-[0_0_10px_#39FF14]" : "bg-slate-700")}"></span>
-            <span class="${cn("text-[9px] font-black uppercase tracking-widest", ready ? "text-[#39FF14]" : "text-slate-500")}">
-              ${ready ? "Locked in" : "Waiting"}
-            </span>
-          </div>
-        </div>
-      `;
-    }
+
+
+
+
 
 
 function renderPaymentQR(t) {
@@ -3217,6 +3592,128 @@ function subscribeSupportChat(tournamentId) {
     render();
   }, () => render());
 }
+
+
+/* =========================
+  TOP NAV LOGIC
+========================= */
+const navBtn = document.getElementById("hamburgerBtn");
+const navMenu = document.getElementById("navMenuItems");
+const navOverlay = document.getElementById("navOverlay");
+
+function openNav() {
+  const menu = document.getElementById("navMenu");
+  const overlay = document.getElementById("navOverlay");
+
+  if (!menu || !overlay) return;
+
+  menu.classList.add("open");
+  overlay.classList.add("show");
+  document.body.classList.add("nav-open");
+}
+
+function closeNav() {
+  const menu = document.getElementById("navMenu");
+  const overlay = document.getElementById("navOverlay");
+
+  if (!menu || !overlay) return;
+
+  menu.classList.remove("open");
+  overlay.classList.remove("show");
+  document.body.classList.remove("nav-open");
+}
+
+
+navBtn?.addEventListener("click", openNav);
+navOverlay?.addEventListener("click", closeNav);
+
+/* BUILD MENU BASED ON CONTEXT */
+function buildNavMenu() {
+  const t = activeTournament();
+  const admin = t && isAdmin(t);
+
+  let items = [];
+
+  /* =========================
+     GLOBAL (no tournament)
+  ========================= */
+  if (!t) {
+    items = [
+      { label: "Browse Tournaments", action: "setGlobalTab", value: "Browse Tournaments" },
+      { label: "My Tournaments", action: "setGlobalTab", value: "My Tournaments" },
+      { label: "Profile", action: "gotoProfile" },
+      { divider: true },
+      { label: "Logout", action: "logout" }
+    ];
+  }
+
+  /* =========================
+     ADMIN PANEL MENU (🔥 FIX-1)
+  ========================= */
+  else if (state.inAdminPanel && admin) {
+    items = [
+      { label: "Participants", action: "setAdminTab", value: "Participants" },
+      { label: "Fixtures", action: "setAdminTab", value: "Fixtures" },
+      { label: "Announcements", action: "setAdminTab", value: "Announcements" },
+      { label: "Disputes", action: "setAdminTab", value: "Disputes" },
+      { label: "Permissions", action: "setAdminTab", value: "Permissions" },
+      { divider: true },
+      { label: "Exit Admin Panel", action: "exitAdminPanel" }
+    ];
+  }
+
+  /* =========================
+     TOURNAMENT MENU (players)
+  ========================= */
+  else {
+    items = [
+      { label: "Home", action: "setTournamentTab", value: "Home" },
+      { label: "Fixtures", action: "setTournamentTab", value: "Fixtures" },
+      { label: "Standings", action: "setTournamentTab", value: "Standings" },
+      { label: "Support", action: "setTournamentTab", value: "Support" }
+    ];
+
+    if (admin) {
+      items.push(
+        { divider: true },
+        { label: "Admin Panel", action: "enterAdminPanel" }
+      );
+    }
+
+    items.push(
+      { divider: true },
+      { label: "Exit Tournament", action: "exitTournament" }
+    );
+  }
+
+  const navMenuItems = document.getElementById("navMenuItems");
+  if (!navMenuItems) return;
+
+  navMenuItems.innerHTML = items.map(i => {
+    if (i.divider) {
+      return `<div class="my-2 border-t border-white/10"></div>`;
+    }
+
+    return `
+      <button
+        class="nav-item"
+        data-action="${i.action}"
+        ${i.value ? `data-value="${i.value}"` : ""}>
+        ${i.label}
+      </button>
+    `;
+  }).join("");
+
+  bindActions();
+}
+
+
+
+/* AUTO CLOSE AFTER CLICK */
+document.addEventListener("click", e => {
+  const item = e.target.closest(".nav-item");
+  if (item) closeNav();
+});
 
 
 
@@ -3302,415 +3799,498 @@ if (state.showPaymentModal) {
         ${state.showCreateTournament ? CreateTournamentModal() : ""}
       `;
       bindActions();
+/* =========================
+   MOBILE NAV ADMIN INJECT
+========================= */
+setTimeout(() => {
+  const slot = document.getElementById("mobileAdminSlot");
+  if (!slot) return;
+
+  const t = activeTournament();
+  if (!t) {
+    slot.innerHTML = "";
+    return;
+  }
+
+  if (isAdmin(t)) {
+    slot.innerHTML = `
+      <button
+        data-action="setTournamentTab"
+        data-value="Admin"
+        class="nav-btn">
+        ⚙️ <span>Admin</span>
+      </button>
+    `;
+  } else {
+    slot.innerHTML = "";
+  }
+}, 0);
+
     }
 
     /* =========================
        11) ACTION BINDINGS
     ========================= */
-    function bindActions() {
-      // generic
-      document.querySelectorAll("[data-action]").forEach(el => {
-        el.onclick = async (e) => {
-          const action = el.getAttribute("data-action");
-          const value = el.getAttribute("data-value");
-
-
-
-  
-
-          try {
-            if (action === "openAuth") { state.authModalOpen = true; render(); }
-            if (action === "closeAuth") { state.authModalOpen = false; render(); }
-
-            if (action === "doLogin") {
-              const email = document.getElementById("loginEmail")?.value || "";
-              const pass = document.getElementById("loginPass")?.value || "";
-              await authLogin(email.trim(), pass);
-            }
-
-            if (action === "doSignup") {
-              const name = document.getElementById("signupName")?.value || "";
-              const email = document.getElementById("signupEmail")?.value || "";
-              const pass = document.getElementById("signupPass")?.value || "";
-              await authSignup(name.trim(), email.trim(), pass);
-            }
-
-            if (action === "logout") await doLogout();
-
-            if (action === "setGlobalTab") { state.globalTab = value; render(); }
-
-            if (action === "enterTournament") { enterTournament(value); }
-
-            if (action === "exitTournament") { exitTournament(); }
-
-            if (action === "setTournamentTab") {
-  state.tournamentTab = value;
-
-  if (value === "Support") {
-    const t = activeTournament();
-    if (!t) return;
-
-    state.uiSupportReady = true;
-
-    // Admin: load thread list
-    subscribeSupportContext(t.id);
-
-    // Player: auto-load own chat
-    if (!isAdmin(t)) {
-      subscribeSupportChat(t.id);
-    }
-  }
-
-  render();
+  function bindActions() {
+  document.querySelectorAll("[data-action]").forEach(el => {
+// Mobile: close nav after any click
+if (window.innerWidth <= 768) {
+  closeNav();
 }
 
-  if (action === "sendSupport") {
-      const t = activeTournament();
-      if (!t) return;
+    el.onclick = async (e) => {
 
-      const input = document.getElementById("supportInput");
-      const msg = input?.value?.trim();
-      if (!msg) return;
+      const action = el.getAttribute("data-action");
+      const value = el.getAttribute("data-value");
 
-      await sendSupportMessage(t.id, msg);
-      input.value = "";
-    }
+      try {
+        // =========================
+        // AUTH
+        // =========================
+        if (action === "openAuth") { state.authModalOpen = true; render(); }
+        if (action === "closeAuth") { state.authModalOpen = false; render(); }
 
-            if (action === "openProfileEdit") { state.showProfileEdit = true; render(); }
-            if (action === "closeProfileEdit") { state.showProfileEdit = false; render(); }
+        if (action === "doLogin") {
+          const email = document.getElementById("loginEmail")?.value || "";
+          const pass = document.getElementById("loginPass")?.value || "";
+          await authLogin(email.trim(), pass);
+        }
 
-            if (action === "saveProfile") {
-              const form = {
-                playerName: document.getElementById("form_playerName")?.value?.trim() || "",
-                gameName: document.getElementById("form_gameName")?.value?.trim() || "",
-                mobile: document.getElementById("form_mobile")?.value?.trim() || "",
-                gameId: document.getElementById("form_gameId")?.value?.trim() || "",
-                upiId: document.getElementById("form_upiId")?.value?.trim() || "",
-                platform: document.getElementById("form_platform")?.value || "Mobile",
-                region: document.getElementById("form_region")?.value || "South Asia"
-              };
-              await saveProfile(form);
+        if (action === "doSignup") {
+          const name = document.getElementById("signupName")?.value || "";
+          const email = document.getElementById("signupEmail")?.value || "";
+          const pass = document.getElementById("signupPass")?.value || "";
+          await authSignup(name.trim(), email.trim(), pass);
+        }
+
+        if (action === "logout") await doLogout();
+
+        // =========================
+        // GLOBAL NAV
+        // =========================
+        if (action === "setGlobalTab") { state.globalTab = value; render(); }
+        if (action === "enterTournament") { enterTournament(value); }
+        if (action === "exitTournament") { exitTournament(); }
+
+        // =========================
+        // TOURNAMENT TABS (KEEP AS-IS)
+        // =========================
+        if (action === "setTournamentTab") {
+          state.tournamentTab = value;
+
+          if (value === "Support") {
+            const t = activeTournament();
+            if (!t) return;
+
+            state.uiSupportReady = true;
+
+            // Admin: load thread list
+            subscribeSupportContext(t.id);
+
+            // Player: auto-load own chat
+            if (!isAdmin(t)) {
+              subscribeSupportChat(t.id);
             }
+          }
 
-            if (action === "gotoProfile") {
-              state.globalTab = "Profile";
-              state.showProfileEdit = true;
-              exitTournament();
-              render();
+          render();
+        }
+
+        // =========================
+        // SUPPORT (PLAYER)
+        // =========================
+        if (action === "sendSupport") {
+          const t = activeTournament();
+          if (!t) return;
+
+          const input = document.getElementById("supportInput");
+          const msg = input?.value?.trim();
+          if (!msg) return;
+
+          await sendSupportMessage(t.id, msg);
+          input.value = "";
+        }
+
+        // =========================
+        // PROFILE
+        // =========================
+        if (action === "openProfileEdit") { state.showProfileEdit = true; render(); }
+        if (action === "closeProfileEdit") { state.showProfileEdit = false; render(); }
+
+        if (action === "saveProfile") {
+          const form = {
+            playerName: document.getElementById("form_playerName")?.value?.trim() || "",
+            gameName: document.getElementById("form_gameName")?.value?.trim() || "",
+            mobile: document.getElementById("form_mobile")?.value?.trim() || "",
+            gameId: document.getElementById("form_gameId")?.value?.trim() || "",
+            upiId: document.getElementById("form_upiId")?.value?.trim() || "",
+            platform: document.getElementById("form_platform")?.value || "Mobile",
+            region: document.getElementById("form_region")?.value || "South Asia"
+          };
+          await saveProfile(form);
+        }
+
+        if (action === "gotoProfile") {
+          state.globalTab = "Profile";
+          state.showProfileEdit = true;
+          exitTournament();
+          render();
+        }
+
+        // =========================
+        // CREATE TOURNAMENT
+        // =========================
+        if (action === "openCreateTournament") { state.showCreateTournament = true; render(); }
+        if (action === "closeCreateTournament") { state.showCreateTournament = false; render(); }
+
+        if (action === "createTournament") {
+          const name = document.getElementById("form_t_name")?.value?.trim() || "";
+          const game = document.getElementById("form_t_game")?.value?.trim() || "eFootball";
+          const format = document.getElementById("form_t_format")?.value || "League";
+          const mode = document.getElementById("form_t_mode")?.value || "Normal";
+          const maxPlayers = Number(document.getElementById("form_t_max")?.value || 16);
+          const type = document.getElementById("form_t_type")?.value || "Free";
+          const entryFee = Number(document.getElementById("form_t_fee")?.value || 0);
+          const upi = document.getElementById("form_t_upi")?.value?.trim() || "";
+          const rules = document.getElementById("form_t_rules")?.value || "";
+          const dlRaw = document.getElementById("form_t_deadline")?.value?.trim() || "";
+
+          let deadline = null;
+          if (dlRaw) {
+            const ms = Number(dlRaw);
+            if (!Number.isNaN(ms) && ms > 1000000000) deadline = ms;
+            else {
+              const dt = new Date(dlRaw);
+              if (!Number.isNaN(dt.getTime())) deadline = dt.getTime();
             }
+          }
 
-            if (action === "openCreateTournament") { state.showCreateTournament = true; render(); }
-            if (action === "closeCreateTournament") { state.showCreateTournament = false; render(); }
+          const sponsorsRaw = document.getElementById("form_t_sponsors")?.value || "";
+          const sponsors = sponsorsRaw.split("\n")
+            .map(x => x.trim())
+            .filter(Boolean)
+            .map(line => {
+              const parts = line.split("|").map(p => p.trim()).filter(Boolean);
+              if (parts.length === 0) return null;
+              if (parts.length === 1) return parts[0];
+              return { name: parts[0], link: parts[1] || "", tagline: parts[2] || "" };
+            })
+            .filter(Boolean);
 
-            if (action === "createTournament") {
-              const name = document.getElementById("form_t_name")?.value?.trim() || "";
-              const game = document.getElementById("form_t_game")?.value?.trim() || "eFootball";
-              const format = document.getElementById("form_t_format")?.value || "League";
-              const mode = document.getElementById("form_t_mode")?.value || "Normal";
-              const maxPlayers = Number(document.getElementById("form_t_max")?.value || 16);
-              const type = document.getElementById("form_t_type")?.value || "Free";
-              const entryFee = Number(document.getElementById("form_t_fee")?.value || 0);
-              const upi = document.getElementById("form_t_upi")?.value?.trim() || "";
-              const rules = document.getElementById("form_t_rules")?.value || "";
-              const dlRaw = document.getElementById("form_t_deadline")?.value?.trim() || "";
+          if (!name) { toast("Tournament name required"); return; }
+          if (!deadline) { toast("Deadline required"); return; }
 
-              let deadline = null;
-              // accept ISO or ms
-              if (dlRaw) {
-                const ms = Number(dlRaw);
-                if (!Number.isNaN(ms) && ms > 1000000000) deadline = ms;
-                else {
-                  const dt = new Date(dlRaw);
-                  if (!Number.isNaN(dt.getTime())) deadline = dt.getTime();
-                }
-              }
+          await createTournament({
+            name, game, format, mode, maxPlayers, deadline,
+            type,
+            entryFee: type === "Paid" ? entryFee : 0,
+            upi: type === "Paid" ? upi : "",
+            rules,
+            visibility: "Public",
+            spectators: true,
+            sponsors,
+            sponsorConfig: { rotateMs: 4500 }
+          });
+        }
 
-              const sponsorsRaw = document.getElementById("form_t_sponsors")?.value || "";
-              const sponsors = sponsorsRaw.split("\n").map(x => x.trim()).filter(Boolean).map(line => {
-                const parts = line.split("|").map(p => p.trim()).filter(Boolean);
-                if (parts.length === 0) return null;
-                if (parts.length === 1) return parts[0];
-                return { name: parts[0], link: parts[1] || "", tagline: parts[2] || "" };
-              }).filter(Boolean);
-
-              if (!name) { toast("Tournament name required"); return; }
-              if (!deadline) { toast("Deadline required"); return; }
-
-              await createTournament({
-                name, game, format, mode, maxPlayers, deadline,
-                type,
-                entryFee: type==="Paid" ? entryFee : 0,
-                upi: type==="Paid" ? upi : "",
-                rules,
-                visibility: "Public",
-                spectators: true,
-                sponsors,
-                sponsorConfig: { rotateMs: 4500 }
-              });
-            }
-
-            if (action === "joinTournament") {
-              const t = activeTournament();
-              await requestJoinTournament(t);
-            }
-
-            if (action === "closePayment") {
-  state.showPaymentModal = false;
-  state.paymentUTR = "";
-  state.paymentExpiresAt = null;
-  render();
-}
-
-
-            if (action === "confirmPaymentJoin") {
+        // =========================
+        // JOIN + PAYMENT
+        // =========================
+        if (action === "joinTournament") {
   const t = activeTournament();
+  if (!t) return;
 
-  // ⛔ Payment expired
-  if (!state.paymentExpiresAt || Date.now() > state.paymentExpiresAt) {
-    toast("Payment session expired. Please reopen payment.");
-    state.showPaymentModal = false;
-    render();
-    return;
-  }
+  const uid = state.user?.uid;
+  if (!uid) return;
 
-  const utr = document.getElementById("utrInput")?.value?.trim() || "";
-  if (!utr) { toast("UTR required"); return; }
-
-  await finalizeJoin(t, utr);
-}
-
-
-            if (action === "setAdminTab") { state.uiAdminTab = value; render(); }
-
-            if (action === "approveParticipant") {
-              const t = activeTournament();
-              await approveParticipant(value, t.id);
-            }
-
-            if (action === "generateFixtures") {
-              const t = activeTournament();
-              await generateLeagueFixtures(t);
-            }
-
-            if (action === "postAnnouncement") {
-  const text = document.getElementById("announcementText")?.value?.trim();
-  if (!text) {
-    toast("Empty announcement");
-    return;
-  }
-
-  const t = activeTournament();
-
-  await addDoc(
-    collection(db, "tournaments", t.id, "announcements"),
-    {
-      text: text,
-      createdAt: serverTimestamp(),     // ✅ ALWAYS server time
-      createdBy: state.user.uid,
-      createdByName:
-        state.profile?.playerName ||
-        state.user.displayName ||
-        "Organizer"
-    }
+  // 🚫 Already applied or joined
+  const already = state.participants.find(p =>
+    p.userId === uid &&
+    p.tournamentId === t.id &&
+    ["pending", "approved", "joined"].includes(p.status)
   );
 
-  document.getElementById("announcementText").value = "";
-  toast("Announcement published");
-}
-
-
-
-            if (action === "postAnnouncementAdmin") {
-              const t = activeTournament();
-              const content = document.getElementById("annDraftAdmin")?.value || "";
-              await postAnnouncement(t.id, content, "manual");
-              if (document.getElementById("annDraftAdmin")) document.getElementById("annDraftAdmin").value = "";
-            }
-
-            if (action === "addAdminUid") {
-              const t = activeTournament();
-              const uid = document.getElementById("newAdminUid")?.value?.trim() || "";
-              if (!uid) { toast("UID required"); return; }
-              await setAdminUid(t.id, uid, true);
-              document.getElementById("newAdminUid").value = "";
-            }
-
-            if (action === "removeAdminUid") {
-              const t = activeTournament();
-              await setAdminUid(t.id, value, false);
-            }
-
-            if (action === "resolveDispute") {
-              await adminResolveDispute(value, "a");
-            }
-
-            if (action === "openMatch") {
-  state.uiMatchModal = value;
-  subscribeMatchChat(value);   // ✅ IMPORTANT
-  render();
-}
-if (action === "sendMatchChat") {
-  const text = document.getElementById("matchChatInput")?.value || "";
-  if (!text.trim()) return;
-
-  await sendMatchChat(value, text);
-  document.getElementById("matchChatInput").value = "";
-}
-
-
-
-            if (action === "closeMatch") {
-              state.uiMatchModal = null;
-              render();
-            }
-
-            if (action === "toggleReady") {
-              const m = state.matches.find(x => x.id === value);
-              await toggleReady(m);
-            }
-
-            if (action === "submitScore") {
-              const m = state.matches.find(x => x.id === value);
-              const a = Number(document.getElementById("scoreA")?.value || 0);
-              const b = Number(document.getElementById("scoreB")?.value || 0);
-              await submitScore(m, a, b);
-            }
-
-            if (action === "confirmScore") {
-              const m = state.matches.find(x => x.id === value);
-              await confirmScore(m);
-            }
-
-            if (action === "disputeScore") {
-              const m = state.matches.find(x => x.id === value);
-              await disputeScore(m);
-            }
-
-            if (action === "openTicket") {
-  state.uiSupportActiveId = value;
-  subscribeSupportMessages(value);
-  render();
-
-}
-
-
-
-
-
-
-if (action === "openSupportThread") {
-  const t = activeTournament();
-  if (!t) return;
-  subscribeAdminThread(t.id, value);
-}
-
-
-
-            if (action === "print") window.print();
-
-          } catch (err) {
-            toast(err?.message || "Action failed");
-          }
-/* COPY UPI */
-if (action === "copyUpi") {
-  const t = activeTournament();
-  if (!t?.upi) return toast("UPI not available");
-
-  navigator.clipboard.writeText(t.upi)
-    .then(() => toast("UPI ID copied"))
-    .catch(() => toast("Copy failed"));
-}
-
-/* OPEN UPI APP */
-if (action === "openUPI") {
-  const t = activeTournament();
-  if (!t?.upi || !t?.entryFee) {
-    toast("UPI not configured");
+  if (already) {
+    toast("You have already applied or joined this tournament");
     return;
   }
 
-  const upiUrl =
-    `upi://pay?pa=${encodeURIComponent(t.upi)}` +
-    `&pn=${encodeURIComponent(t.organizerName || "Organizer")}` +
-    `&am=${encodeURIComponent(t.entryFee)}` +
-    `&cu=INR&tn=Tournament Entry`;
-
-  window.location.href = upiUrl;
+  await requestJoinTournament(t);
 }
 
-if (action === "backSupportThreads") {
-  const t = activeTournament();
-  if (!t) return;
-  state.uiSupportActiveId = null;
-  state.uiSupportMessages = [];
-  state.uiSupportAdminView = "threads";
-  // re-subscribe threads list
-  subscribeSupportContext(t.id);
+
+        if (action === "closePayment") {
+          state.showPaymentModal = false;
+          state.paymentUTR = "";
+          state.paymentExpiresAt = null;
+          render();
+        }
+
+        if (action === "confirmPaymentJoin") {
+          const t = activeTournament();
+
+          if (!state.paymentExpiresAt || Date.now() > state.paymentExpiresAt) {
+            toast("Payment session expired. Please reopen payment.");
+            state.showPaymentModal = false;
+            render();
+            return;
+          }
+
+          const utr = document.getElementById("utrInput")?.value?.trim() || "";
+          if (!utr) { toast("UTR required"); return; }
+
+          await finalizeJoin(t, utr);
+        }
+
+        // =========================
+        // ADMIN
+        // =========================
+        if (action === "setAdminTab") { state.uiAdminTab = value; render(); }
+
+        if (action === "approveParticipant") {
+          const t = activeTournament();
+          await approveParticipant(value, t.id);
+        }
+
+        if (action === "generateFixtures") {
+          const t = activeTournament();
+          await generateLeagueFixtures(t);
+        }
+
+        // =========================
+        // ANNOUNCEMENTS (FIXED: removed broken duplicate addDoc)
+        // =========================
+        if (action === "postAnnouncement") {
+          const text = document.getElementById("announcementText")?.value?.trim();
+          if (!text) { toast("Empty announcement"); return; }
+
+          const t = activeTournament();
+          await postAnnouncement(t.id, text, "manual");
+
+          const ta = document.getElementById("announcementText");
+          if (ta) ta.value = "";
+
+          toast("Announcement published");
+        }
+
+        if (action === "postAnnouncementAdmin") {
+          const t = activeTournament();
+          const content = document.getElementById("annDraftAdmin")?.value || "";
+          await postAnnouncement(t.id, content, "manual");
+          if (document.getElementById("annDraftAdmin")) document.getElementById("annDraftAdmin").value = "";
+        }
+
+        if (action === "addAdminUid") {
+          const t = activeTournament();
+          const uid = document.getElementById("newAdminUid")?.value?.trim() || "";
+          if (!uid) { toast("UID required"); return; }
+          await setAdminUid(t.id, uid, true);
+          document.getElementById("newAdminUid").value = "";
+        }
+
+        if (action === "removeAdminUid") {
+          const t = activeTournament();
+          await setAdminUid(t.id, value, false);
+        }
+
+        // =========================
+        // DISPUTE (keep BOTH behaviors)
+        // =========================
+        if (action === "resolveDispute") {
+          // If clicked from admin tools (value = matchId)
+          if (value) {
+            await adminResolveDispute(value, "a");
+          } else {
+            // If clicked from dataset button (uses el.dataset)
+            const match = state.matches.find(m => m.id === el.dataset.mid);
+            const guilty = el.dataset.guilty;
+
+            const score = prompt("Enter final score (e.g. 2-1)");
+            if (match && score) {
+              resolveDispute(match, score, guilty);
+            }
+          }
+        }
+
+if (action === "enterAdminPanel") {
+  state.inAdminPanel = true;
+  state.tournamentTab = "Admin";
+  closeNav();
   render();
 }
 
-if (action === "setTournamentTab" && value === "Support") {
-  const t = activeTournament();
-  if (!t) return;
-
-  // Admin should load thread list too
-  subscribeSupportContext(t.id);
-
-  // Player loads chat immediately
-  if (!isAdmin(t)) subscribeSupportChat(t.id);
-
+if (action === "exitAdminPanel") {
+  state.inAdminPanel = false;
+  state.tournamentTab = "Home";
+  closeNav();
   render();
 }
 
+        // =========================
+        // MATCH MODAL + CHAT
+        // =========================
+        if (action === "openMatch") {
+          state.uiMatchModal = value;
+          subscribeMatchChat(value);
+          render();
+        }
 
-if (action === "sendSupport") {
-  const t = activeTournament();
-  if (!t) return;
+        if (action === "sendMatchChat") {
+          const text = document.getElementById("matchChatInput")?.value || "";
+          if (!text.trim()) return;
 
-  const input = document.getElementById("supportInput");
-  const msg = input?.value?.trim();
-  if (!msg) return;
+          await sendMatchChat(value, text);
+          document.getElementById("matchChatInput").value = "";
+        }
 
-  await sendSupportMessage(t.id, msg);
-  input.value = "";
-}
+        if (action === "closeMatch") {
+          state.uiMatchModal = null;
+          render();
+        }
+
+        // =========================
+        // SCORE FLOW
+        // =========================
+        if (action === "toggleReady") {
+          const m = state.matches.find(x => x.id === value);
+          await toggleReady(m);
+        }
+
+        if (action === "submitScore") {
+          const m = state.matches.find(x => x.id === value);
+          const a = Number(document.getElementById("scoreA")?.value || 0);
+          const b = Number(document.getElementById("scoreB")?.value || 0);
+          await submitScore(m, a, b);
+        }
+
+        if (action === "confirmScore") {
+          const m = state.matches.find(x => x.id === value);
+          await confirmScore(m);
+        }
+
+        if (action === "disputeScore") {
+          const m = state.matches.find(x => x.id === value);
+          await disputeScore(m);
+        }
+
+        // =========================
+        // SUPPORT (ADMIN THREAD VIEW)
+        // =========================
+        if (action === "openTicket") {
+          state.uiSupportActiveId = value;
+          subscribeSupportMessages(value);
+          render();
+        }
+
+        if (action === "openSupportThread") {
+          const t = activeTournament();
+          if (!t) return;
+          subscribeAdminThread(t.id, value);
+        }
+
+        if (action === "backSupportThreads") {
+          const t = activeTournament();
+          if (!t) return;
+          state.uiSupportActiveId = null;
+          state.uiSupportMessages = [];
+          state.uiSupportAdminView = "threads";
+          subscribeSupportContext(t.id);
+          render();
+        }
+
+        // =========================
+        // COPY/OPEN UPI (MOVED INSIDE TRY so await errors are caught)
+        // =========================
+        if (action === "copyUpi") {
+          const t = activeTournament();
+          if (!t?.upi) return toast("UPI not available");
+
+          navigator.clipboard.writeText(t.upi)
+            .then(() => toast("UPI ID copied"))
+            .catch(() => toast("Copy failed"));
+        }
+
+        if (action === "openUPI") {
+          const t = activeTournament();
+          if (!t?.upi || !t?.entryFee) {
+            toast("UPI not configured");
+            return;
+          }
+
+          const upiUrl =
+            `upi://pay?pa=${encodeURIComponent(t.upi)}` +
+            `&pn=${encodeURIComponent(t.organizerName || "Organizer")}` +
+            `&am=${encodeURIComponent(t.entryFee)}` +
+            `&cu=INR&tn=Tournament Entry`;
+
+          window.location.href = upiUrl;
+        }
+
+        // =========================
+        // REJECT PARTICIPANT (FIXED: moved inside try)
+        // =========================
+        if (action === "rejectParticipant") {
+          await updateDoc(doc(db, "participants", value), {
+            status: "rejected",
+            paymentStatus: "REJECTED",
+            rejectedAt: now()
+          });
+          toast("Payment rejected");
+        }
+
+if (action === "openMobileNav") openMobileNav();
+if (action === "closeMobileNav") closeMobileNav();
 
 
+        // =========================
+        // PRINT
+        // =========================
+        if (action === "print") window.print();
 
-if (action === "resolveDispute") {
-  const match = state.matches.find(m => m.id === el.dataset.mid);
-  const guilty = el.dataset.guilty;
-
-  const score = prompt("Enter final score (e.g. 2-1)");
-  if (match && score) {
-    resolveDispute(match, score, guilty);
-  }
-}
-
-
-
-/* REJECT PARTICIPANT */
-if (action === "rejectParticipant") {
-  await updateDoc(doc(db, "participants", value), {
-    status: "rejected",
-    paymentStatus: "REJECTED",
-    rejectedAt: now()
+      } catch (err) {
+        console.error(err);
+        toast(err?.message || "Action failed");
+      }
+    };
   });
-  toast("Payment rejected");
 }
 
 
-        };
-      });
-    }
- 
+document.addEventListener("click", (e) => {
+  if (e.target?.id === "mobileNavBtn") {
+    openMobileNav();
+  }
+});
+
+
 
     // Initial render
     render();
+
 
     // Safety: if activeTournament changes while logged in, resubscribe
     // (handled inside enterTournament / exitTournament)
 
   </script>
+
+
+
+<!-- =========================
+  HAMBURGER MENU
+========================= -->
+<div id="navOverlay"
+  class="fixed inset-0 z-[160] bg-black/60 hidden"></div>
+
+<div id="navMenu"
+  class="fixed top-14 right-4 z-[170] hidden
+         w-56 rounded-2xl bg-[#0b0b0b]
+         border border-white/10 shadow-2xl
+         overflow-hidden">
+
+  <div id="navMenuItems" class="divide-y divide-white/5"></div>
+</div>
+<div id="navOverlay" onclick="closeNav()"></div>
+
+
 </body>
 </html>
