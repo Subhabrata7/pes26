@@ -218,7 +218,99 @@ body.nav-lock {
     letter-spacing: .04em;
   }
 }
+/* ===== MODAL SCROLL FIX ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  backdrop-filter: blur(12px);
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
 
+.modal-container {
+  width: 100%;
+  max-width: 420px;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* hide scrollbar but keep scroll */
+.modal-container::-webkit-scrollbar {
+  display: none;
+}
+.modal-container {
+  scrollbar-width: none;
+}
+
+/* ===== SLIDE UP MODAL ANIMATION ===== */
+@keyframes slideUpFade {
+  from {
+    transform: translateY(40px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.modal-container {
+  animation: slideUpFade 0.35s cubic-bezier(.22,1,.36,1);
+}
+/* ===== TOAST FIX ===== */
+.toast-container {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999; /* 🔥 ABOVE MODALS */
+  pointer-events: none;
+}
+
+.toast {
+  background: #111;
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #39FF14;
+  padding: 14px 18px;
+  border-radius: 14px;
+  font-weight: 900;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  box-shadow: 0 0 30px rgba(57,255,20,0.25);
+}
+
+.menu-item {
+  width: 100%;
+  padding: 16px 18px;
+  text-align: left;
+  font-weight: 900;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.15em;
+  color: #e5e7eb;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: transparent;
+}
+
+.menu-item:hover {
+  background: rgba(255,255,255,0.05);
+}
+
+/* ===== TOAST ALWAYS ON TOP ===== */
+.toast-wrapper {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000; /* 🔥 HIGHER THAN ANY MODAL */
+  pointer-events: none;
+}
 
 </style>
 
@@ -242,11 +334,15 @@ body.nav-lock {
     </span>
   </div>
 
-  <button id="hamburgerBtn"
-    class="w-10 h-10 rounded-lg bg-white/5 border border-white/10
-           text-white text-xl font-black">
-    ☰
-  </button>
+      <button
+        data-action="openMenu"
+        class="w-10 h-10 rounded-xl bg-white/5
+               border border-white/10 flex items-center
+               justify-center text-xl">
+        ☰
+      </button>
+    
+
 </div>
 
   <!-- Firebase + App -->
@@ -264,7 +360,8 @@ body.nav-lock {
       signOut,
       createUserWithEmailAndPassword,
       signInWithEmailAndPassword,
-      updateProfile
+      updateProfile,
+sendPasswordResetEmail
     } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 
     import {
@@ -331,15 +428,22 @@ const firebaseConfig = {
     };
     const now = () => Date.now();
 
-    function toast(msg) {
-      state.toast = { msg, at: now() };
-      render();
-      setTimeout(() => {
-        if (state.toast && (now() - state.toast.at) > 2200) {
-          state.toast = null; render();
-        }
-      }, 2400);
-    }
+   function toast(msg) {
+  if (typeof msg !== "string") {
+    console.warn("Toast received non-string:", msg);
+    msg = "Something went wrong";
+  }
+
+  state.toast = msg;
+
+  setTimeout(() => {
+    state.toast = null;
+    render();
+  }, 2500);
+
+  render();
+}
+
 
     /* =========================
        3) GLOBAL STATE
@@ -366,6 +470,8 @@ matchChat: [],
   // Announcements
   announcements: [],
 inAdminPanel: false,
+forgotPasswordSent: false,
+
 
 
   // SUPPORT (FINAL – no tickets, no channels)
@@ -830,7 +936,10 @@ subscribeMyTournaments();
         return;
       }
 
-      const full = (Number(t.playerCount||0) >= Number(t.maxPlayers||0));
+      const full = Number(t.playerCount || 0) >= Number(t.maxPlayers || 0);
+const deadlinePassed = t.deadline && Date.now() > Number(t.deadline);
+const registrationClosed = full || deadlinePassed || t.status !== "Registration Open";
+
       if (full) {
         toast("Tournament full");
         return;
@@ -1626,68 +1735,178 @@ async function checkAndEndMatchdays(tournamentId) {
     }
 
     function PublicLanding() {
-      return `
-        <div class="min-h-screen bg-[#050505] text-slate-100">
-          <div class="max-w-6xl mx-auto px-4 py-12 md:py-20">
-            <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-14 shadow-2xl relative overflow-hidden">
-              <div class="absolute -top-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full"></div>
+  return `
+  <div class="min-h-screen bg-[#050505] text-slate-100 overflow-hidden">
 
-              <div class="relative z-10 space-y-6">
-                <div class="inline-flex items-center gap-3 px-5 py-2 rounded-full border border-white/10 bg-white/5">
-                  <span class="w-2 h-2 rounded-full bg-[#39FF14] shadow-[0_0_10px_#39FF14]"></span>
-                  <span class="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">PES Arena Platform</span>
-                </div>
+    <!-- ================= HERO ================= -->
+    <div class="relative overflow-hidden">
+      <div class="absolute inset-0 bg-gradient-to-br from-[#39FF14]/15 via-black to-black blur-3xl"></div>
 
-                <h1 class="text-5xl md:text-7xl font-black italic uppercase tracking-tighter leading-none">
-                  Run eFootball Tournaments Like a Pro.
-                </h1>
+      <div class="relative z-10 max-w-6xl mx-auto px-4 py-16 md:py-24">
+        <div class="rounded-[2.8rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-14 shadow-2xl relative overflow-hidden">
+          <div class="absolute -top-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full"></div>
 
-                <p class="text-slate-400 font-bold leading-relaxed max-w-3xl">
-                  League / Knockout / Group+Knockout tournaments with live standings, match confirmation, disputes,
-                  announcements, sponsor rotation, presence, and private support chat — inside one platform.
-                </p>
+          <div class="relative z-10 space-y-7">
 
-                <div class="flex flex-col sm:flex-row gap-4 pt-2">
-                  <button data-action="openAuth" class="px-10 py-5 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[11px] shadow-[0_0_35px_rgba(57,255,20,0.25)] hover:scale-[1.01] transition-transform">
-                    Login / Sign Up
-                  </button>
+            <!-- LIVE BADGE -->
+            <div class="inline-flex items-center gap-3 px-5 py-2 rounded-full border border-[#39FF14]/30 bg-[#39FF14]/10">
+              <span class="relative flex h-2 w-2">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#39FF14] opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 bg-[#39FF14]"></span>
+              </span>
+              <span class="text-[10px] font-black uppercase tracking-[0.35em] text-[#39FF14]">
+                Live Competitive Platform
+              </span>
+            </div>
 
-                  <div class="px-10 py-5 rounded-2xl border border-white/10 bg-white/5 text-slate-300 font-black uppercase tracking-widest text-[11px]">
-                    No preview • No data leakage
-                  </div>
-                </div>
+            <h1 class="text-5xl md:text-7xl font-black italic uppercase tracking-tighter leading-none">
+              Run eFootball Tournaments<br class="hidden md:block" />
+              Like a Pro.
+            </h1>
+
+            <p class="text-slate-400 font-bold leading-relaxed max-w-3xl">
+              League / Knockout / Group+Knockout tournaments with live standings,
+              match confirmation, disputes, announcements, sponsor rotation,
+              presence, and private support chat — inside one platform.
+            </p>
+
+            <!-- CTA -->
+            <div class="flex flex-col sm:flex-row gap-4 pt-3">
+              <button data-action="openAuth"
+                class="px-10 py-5 rounded-2xl bg-[#39FF14] text-black font-black uppercase tracking-widest text-[11px]
+                       shadow-[0_0_35px_rgba(57,255,20,0.25)] hover:scale-[1.02] transition">
+                Login / Sign Up
+              </button>
+
+             
+            </div>
+
+            <!-- STATS -->
+            <div class="grid grid-cols-3 gap-4 pt-8 max-w-md">
+              <div class="rounded-2xl bg-white/5 border border-white/10 p-4">
+                <div class="text-2xl font-black text-[#39FF14]">150+</div>
+                <div class="text-[10px] uppercase tracking-widest text-slate-400">Players</div>
+              </div>
+              <div class="rounded-2xl bg-white/5 border border-white/10 p-4">
+                <div class="text-2xl font-black text-[#39FF14]">60+</div>
+                <div class="text-[10px] uppercase tracking-widest text-slate-400">Matches</div>
+              </div>
+              <div class="rounded-2xl bg-white/5 border border-white/10 p-4">
+                <div class="text-2xl font-black text-[#39FF14]">18</div>
+                <div class="text-[10px] uppercase tracking-widest text-slate-400">Tournaments</div>
               </div>
             </div>
 
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-10 md:mt-14">
-              ${FeatureCard("For Organizers", [
-                "Create tournaments (League / Knockout / Group + Knockout)",
-                "Approve players + manage admins",
-                "Generate fixtures (Round Robin) + bracket view",
-                "Announcements with unread markers",
-                "Dispute center + strike system",
-                "Sponsor rotation + matchday banner",
-                "PDF export via Print (Standings/Bracket)"
-              ])}
-
-              ${FeatureCard("For Players", [
-                "Join tournaments (Free / Paid with UTR)",
-                "Ready check + submit score",
-                "Opponent confirm or dispute",
-                "Accuracy rating for submitters",
-                "Presence indicator (online/offline)",
-                "Standings, fixtures, bracket & announcements",
-                "Support chat with admin/organizer"
-              ])}
-            </div>
-
-            <div class="text-center text-slate-700 font-black uppercase tracking-[0.4em] text-[10px] mt-14">
-              Built for mobile-first tournaments
-            </div>
           </div>
         </div>
-      `;
-    }
+      </div>
+    </div>
+
+    <!-- ================= CONTENT ================= -->
+    <div class="max-w-6xl mx-auto px-4 space-y-20 pb-24">
+
+      <!-- STANDINGS PREVIEW -->
+      <div>
+        <h2 class="text-3xl font-black italic uppercase mb-4">Standings Preview</h2>
+
+        <div class="rounded-3xl border border-white/10 bg-[#0a0a0a] overflow-hidden">
+          <div class="grid grid-cols-6 px-5 py-3 text-[10px] font-black uppercase text-slate-500 border-b border-white/10">
+            <div>Pos</div><div class="col-span-2">Player</div><div>P</div><div>GD</div><div class="text-right">Pts</div>
+          </div>
+
+          <div class="grid grid-cols-6 px-5 py-4 border-b border-white/5">
+            <div class="text-[#39FF14] font-black">1</div>
+            <div class="col-span-2 font-black italic">ALEX</div>
+            <div>5</div>
+            <div class="text-[#39FF14]">+8</div>
+            <div class="text-right font-black">13</div>
+          </div>
+
+          <div class="grid grid-cols-6 px-5 py-4 border-b border-white/5">
+            <div>2</div>
+            <div class="col-span-2 font-black italic">RAHUL</div>
+            <div>5</div>
+            <div>+5</div>
+            <div class="text-right font-black">11</div>
+          </div>
+
+          <div class="backdrop-blur-sm bg-white/5 opacity-40">
+            <div class="grid grid-cols-6 px-5 py-4">
+              <div>3</div>
+              <div class="col-span-2 font-black italic">SUBHA</div>
+              <div>5</div>
+              <div>+2</div>
+              <div class="text-right font-black">9</div>
+            </div>
+          </div>
+
+          <div class="px-5 py-3 text-center text-xs text-slate-500">
+            🔒 Full standings unlock after login
+          </div>
+        </div>
+      </div>
+
+      <!-- MATCH PREVIEW -->
+      <div>
+        <h2 class="text-3xl font-black italic uppercase mb-4">Live & Upcoming Matches</h2>
+
+        <div class="space-y-4">
+          <div class="rounded-2xl border border-[#39FF14]/30 bg-[#39FF14]/5 p-5 flex justify-between">
+            <div>
+              <div class="text-xs text-[#39FF14] font-black uppercase">LIVE</div>
+              <div class="font-black italic">ALEX 2 : 1 RAHUL</div>
+            </div>
+            <div class="animate-pulse text-[#39FF14] font-black">●</div>
+          </div>
+
+          <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+            <div class="text-xs uppercase text-slate-400">Upcoming</div>
+            <div class="font-black italic">SUBHAS vs KARTHIK</div>
+          </div>
+
+          <div class="rounded-2xl border border-white/10 bg-black/40 p-5 opacity-60">
+            <div class="text-xs uppercase text-slate-500">Finished</div>
+            <div class="font-black italic">AMAN 0 : 3 RAVI</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ORGANIZER FLOW -->
+      <div>
+        <h2 class="text-3xl font-black italic uppercase mb-6">Organizer Workflow</h2>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+          ${["Create Tournament","Approve Players","Run Matches","Declare Winner"].map((t,i)=>`
+            <div class="rounded-2xl bg-white/5 border border-white/10 p-5">
+              <div class="text-[#39FF14] font-black text-xl">${i+1}</div>
+              <div class="font-black uppercase text-sm mt-2">${t}</div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+
+      <!-- RULES -->
+      <div>
+        <h2 class="text-3xl font-black italic uppercase mb-4">Tournament Rules</h2>
+        <div class="rounded-3xl border border-white/10 bg-white/5 p-6 space-y-2 text-sm text-slate-300">
+          <div>• One match per matchday per player</div>
+          <div>• Ready check mandatory</div>
+          <div>• Auto result if match not completed</div>
+          <div>• Disputes handled by admin</div>
+          <div class="text-xs text-slate-500 pt-2">
+            Full rules available after joining tournament
+          </div>
+        </div>
+      </div>
+
+      <div class="text-center text-slate-700 font-black uppercase tracking-[0.4em] text-[10px]">
+        Built for mobile-first tournaments
+      </div>
+
+    </div>
+  </div>
+  `;
+}
+
 
     function FeatureCard(title, items) {
       return `
@@ -1710,57 +1929,76 @@ async function checkAndEndMatchdays(tournamentId) {
     }
 
     function AuthModal() {
-      const loading = state.loadingAction;
-      return `
-        <div class="fixed inset-0 z-[100] bg-black/90 backdrop-blur-xl flex items-center justify-center p-4 print-hidden">
-          <div class="w-full max-w-lg rounded-[2.5rem] border border-[#39FF14]/20 bg-[#0a0a0a] p-10 shadow-2xl relative overflow-hidden">
-            <div class="absolute top-0 left-0 w-full h-1.5 bg-[#39FF14]"></div>
-            <div class="flex items-start justify-between gap-4">
-              <div>
-                <h3 class="text-2xl font-black italic uppercase tracking-tighter">Login / Sign Up</h3>
-                <p class="text-slate-500 font-black uppercase tracking-widest text-[10px] mt-2">
-                  Email/Password (Firebase)
-                </p>
-              </div>
-              <button data-action="closeAuth" class="p-3 rounded-xl border border-white/10 bg-white/5 text-slate-200 hover:border-[#39FF14]/30">
-                ${Icon("x","w-4 h-4")}
-              </button>
-            </div>
+  return `
+    <div class="modal-overlay">
+      <div class="modal-container rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-6 shadow-2xl">
 
-            <div class="mt-8 grid grid-cols-1 gap-6">
-              <div class="rounded-2xl border border-white/10 bg-black p-5">
-                <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">Login</div>
-                <div class="grid gap-3">
-                  <input id="loginEmail" class="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-5 py-4 text-sm font-bold outline-none focus:border-[#39FF14]" placeholder="Email" />
-                  <input id="loginPass" type="password" class="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-5 py-4 text-sm font-bold outline-none focus:border-[#39FF14]" placeholder="Password" />
-                  <button data-action="doLogin" class="${cn(
-                    "w-full px-8 py-4 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all",
-                    loading ? "bg-white/10 text-slate-500 border border-white/10 cursor-not-allowed" : "bg-[#39FF14] text-black"
-                  )}">${loading ? "Please wait..." : "Login"}</button>
-                </div>
-              </div>
-
-              <div class="rounded-2xl border border-white/10 bg-black p-5">
-                <div class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-4">Sign Up</div>
-                <div class="grid gap-3">
-                  <input id="signupName" class="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-5 py-4 text-sm font-bold outline-none focus:border-[#39FF14]" placeholder="Display Name" />
-                  <input id="signupEmail" class="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-5 py-4 text-sm font-bold outline-none focus:border-[#39FF14]" placeholder="Email" />
-                  <input id="signupPass" type="password" class="w-full bg-[#0a0a0a] border border-white/10 rounded-xl px-5 py-4 text-sm font-bold outline-none focus:border-[#39FF14]" placeholder="Password" />
-                  <button data-action="doSignup" class="${cn(
-                    "w-full px-8 py-4 rounded-xl font-black uppercase tracking-widest text-[10px] transition-all",
-                    loading ? "bg-white/10 text-slate-500 border border-white/10 cursor-not-allowed" : "bg-white text-black hover:bg-[#39FF14]"
-                  )}">${loading ? "Please wait..." : "Create Account"}</button>
-                </div>
-              </div>
-
-              <div class="text-[9px] font-black uppercase tracking-widest text-slate-600 text-center">
-                Tip: After sign up, complete Profile to join tournaments.
-              </div>
-            </div>
+        <!-- HEADER -->
+        <div class="flex justify-between items-center mb-6">
+          <div class="font-black uppercase tracking-widest text-xs text-slate-400">
+            PES ARENA
           </div>
+          <button data-action="closeAuth"
+            class="p-2 rounded-xl bg-white/5 border border-white/10 text-white">
+            ✕
+          </button>
         </div>
-      `;
-    }
+
+        <!-- LOGIN -->
+        <div class="space-y-4">
+          <input id="loginEmail"
+            class="w-full rounded-xl bg-black border border-white/10 px-4 py-4 text-white"
+            placeholder="Email" />
+
+          <input id="loginPass" type="password"
+            class="w-full rounded-xl bg-black border border-white/10 px-4 py-4 text-white"
+            placeholder="Password" />
+
+          <button data-action="doLogin"
+            class="w-full py-4 rounded-xl bg-[#39FF14] text-black font-black uppercase">
+            Login
+          </button>
+        </div>
+
+        <!-- DIVIDER -->
+        <div class="my-8 border-t border-white/10"></div>
+
+        <!-- SIGN UP -->
+        <div class="space-y-4">
+          <div class="text-xs font-black uppercase tracking-widest text-slate-500">
+            Sign Up
+          </div>
+
+          <input id="signupName"
+            class="w-full rounded-xl bg-black border border-white/10 px-4 py-4 text-white"
+            placeholder="Display Name" />
+
+          <input id="signupEmail"
+            class="w-full rounded-xl bg-black border border-white/10 px-4 py-4 text-white"
+            placeholder="Email" />
+
+          <input id="signupPass" type="password"
+            class="w-full rounded-xl bg-black border border-white/10 px-4 py-4 text-white"
+            placeholder="Password" />
+
+          <button data-action="doSignup"
+            class="w-full py-4 rounded-xl bg-white/5 border border-white/10 font-black uppercase">
+            Create Account
+          </button>
+        </div>
+<div class="text-center mt-3">
+  <button
+    data-action="forgotPassword"
+    class="text-xs font-black uppercase tracking-widest text-slate-400 hover:text-[#39FF14]">
+    Forgot password?
+  </button>
+</div>
+
+      </div>
+    </div>
+  `;
+}
+
 
     function GlobalLayout(content) {
       return `
@@ -1863,15 +2101,17 @@ async function checkAndEndMatchdays(tournamentId) {
     }
 
     function ToastUI() {
-      if (!state.toast) return "";
-      return `
-        <div class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] print-hidden">
-          <div class="px-6 py-4 rounded-2xl bg-black/90 border border-white/10 shadow-2xl text-slate-200 font-black uppercase tracking-widest text-[10px]">
-            ${esc(state.toast.msg)}
-          </div>
-        </div>
-      `;
-    }
+  if (!state.toast) return "";
+
+  return `
+    <div class="toast-wrapper">
+      <div class="toast">
+        ${state.toast}
+      </div>
+    </div>
+  `;
+}
+
 
     /* =========================
        9) PAGES
@@ -2195,57 +2435,102 @@ function MatchdayLiveBanner() {
     /* =========================
        TOURNAMENT TABS
     ========================= */
-    function TabHome(t) {
-      const registered = isRegistered(t);
-      const fee = t.type === "Paid" ? `INR ${Number(t.entryFee||0)}` : "FREE";
-      const full = (Number(t.playerCount||0) >= Number(t.maxPlayers||0));
+   function TabHome(t) {
+  const registered = isRegistered(t);
+  const fee = t.type === "Paid" ? `INR ${Number(t.entryFee || 0)}` : "FREE";
+  const full = (Number(t.playerCount || 0) >= Number(t.maxPlayers || 0));
+  const canEditRules = isAdmin(t); // organizer or admin
 
-      return `
-        <div class="space-y-10">
-          ${SponsorBannerUI(t)}
+  return `
+    <div class="space-y-10">
+      ${SponsorBannerUI(t)}
 
+      <!-- TOURNAMENT HERO -->
+      <div class="rounded-[3rem] border border-white/10 bg-[#0a0a0a] p-10 md:p-14 shadow-2xl relative overflow-hidden">
+        <div class="absolute -top-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full"></div>
 
-          <div class="rounded-[3rem] border border-white/10 bg-[#0a0a0a] p-10 md:p-14 shadow-2xl relative overflow-hidden">
-            <div class="absolute -top-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full"></div>
-            <div class="relative z-10 space-y-6">
-              <div class="flex flex-wrap gap-2">
-                <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">${esc(t.format||"League")}</span>
-                <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">${esc(t.mode||"Normal")}</span>
-                <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-[#39FF14]/30 text-[#39FF14] bg-[#39FF14]/5">${esc(t.status||"")}</span>
-              </div>
-
-              <h1 class="text-4xl md:text-6xl font-black italic uppercase tracking-tighter leading-none">${esc(t.name||"Tournament")}</h1>
-
-              <div class="flex flex-wrap gap-4">
-                ${Stat("Players", `${Number(t.playerCount||0)} / ${Number(t.maxPlayers||0)}`)}
-                ${Stat("Entry", fee)}
-                ${t.deadline ? Stat("Registration Closes", fmtDT(t.deadline)) : ""}
-              </div>
-            </div>
-          </div>
-${MatchdayLiveBanner()}
-
-          <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
-            ${!registered ? JoinPanel(t, full) : `
-              <div class="rounded-2xl px-8 py-6 text-center font-black uppercase tracking-[0.35em] text-[10px] bg-[#39FF14]/10 border border-[#39FF14]/30 text-[#39FF14]">
-                Registry confirmed (pending approval may apply)
-              </div>
-            `}
+        <div class="relative z-10 space-y-6">
+          <div class="flex flex-wrap gap-2">
+            <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">
+              ${esc(t.format || "League")}
+            </span>
+            <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">
+              ${esc(t.mode || "Normal")}
+            </span>
+            <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest
+                         border border-[#39FF14]/30 text-[#39FF14] bg-[#39FF14]/5">
+              ${esc(t.status || "")}
+            </span>
           </div>
 
-          <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
-            <div class="border-l-4 border-[#39FF14] pl-6 mb-6">
-              <h2 class="text-2xl font-black italic uppercase tracking-tighter">Tournament Rules</h2>
-              <p class="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mt-2">Mandatory compliance</p>
-            </div>
-            <pre class="whitespace-pre-wrap text-slate-300 font-bold leading-relaxed">${esc(t.rules || "No rules defined yet.")}</pre>
+          <h1 class="text-4xl md:text-6xl font-black italic uppercase tracking-tighter leading-none">
+            ${esc(t.name || "Tournament")}
+          </h1>
+
+          <div class="flex flex-wrap gap-4">
+            ${Stat("Players", `${Number(t.playerCount || 0)} / ${Number(t.maxPlayers || 0)}`)}
+            ${Stat("Entry", fee)}
+            ${t.deadline ? Stat("Registration Closes", fmtDT(t.deadline)) : ""}
           </div>
         </div>
-      `;
-    }
+      </div>
 
-  function JoinPanel(t, full) {
+      ${MatchdayLiveBanner()}
+
+      <!-- JOIN PANEL -->
+      <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
+        ${
+          !registered
+            ? JoinPanel(t, full)
+            : `
+              <div class="rounded-2xl px-8 py-6 text-center font-black uppercase tracking-[0.35em] text-[10px]
+                          bg-[#39FF14]/10 border border-[#39FF14]/30 text-[#39FF14]">
+                Registry confirmed (pending approval may apply)
+              </div>
+            `
+        }
+      </div>
+
+      <!-- TOURNAMENT RULES -->
+      <div class="rounded-[2.5rem] border border-white/10 bg-[#0a0a0a] p-8 md:p-10 shadow-2xl">
+        <div class="flex items-start justify-between gap-4 mb-6">
+          <div class="border-l-4 border-[#39FF14] pl-6">
+            <h2 class="text-2xl font-black italic uppercase tracking-tighter">
+              Tournament Rules
+            </h2>
+            <p class="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mt-2">
+              Mandatory compliance
+            </p>
+          </div>
+
+          ${
+            canEditRules
+              ? `
+                <button
+                  data-action="editRules"
+                  class="px-5 py-2 rounded-xl bg-white/5 border border-white/10
+                         text-[10px] font-black uppercase tracking-widest text-[#39FF14]">
+                  Edit
+                </button>
+              `
+              : ""
+          }
+        </div>
+
+        <pre class="whitespace-pre-wrap text-slate-300 font-bold leading-relaxed">
+${esc(t.rules || "No rules defined yet.")}
+        </pre>
+      </div>
+    </div>
+  `;
+}
+
+
+ function JoinPanel(t, full) {
   const uid = state.user?.uid;
+
+  const now = Date.now();
+  const deadlinePassed = t.deadline && now > Number(t.deadline);
 
   const already = state.participants.find(p =>
     p.userId === uid &&
@@ -2253,18 +2538,39 @@ ${MatchdayLiveBanner()}
     ["pending", "approved"].includes(p.status)
   );
 
+  /* ===============================
+     ALREADY APPLIED / JOINED
+  =============================== */
   if (already) {
     return `
       <div class="rounded-2xl px-8 py-6 text-center
         font-black uppercase tracking-[0.35em] text-[10px]
         bg-[#39FF14]/10 border border-[#39FF14]/30 text-[#39FF14]">
-        ${already.status === "pending"
-          ? "Application Submitted (Pending Approval)"
-          : "Already Joined"}
+        ${
+          already.status === "pending"
+            ? "Application Submitted (Pending Approval)"
+            : "Already Joined"
+        }
       </div>
     `;
   }
 
+  /* ===============================
+     DEADLINE PASSED
+  =============================== */
+  if (deadlinePassed) {
+    return `
+      <div class="rounded-2xl px-8 py-6 text-center
+        font-black uppercase tracking-[0.35em] text-[10px]
+        bg-white/5 border border-white/10 text-red-400">
+        Registration Closed
+      </div>
+    `;
+  }
+
+  /* ===============================
+     REGISTRATION STATUS CLOSED
+  =============================== */
   if (t.status !== "Registration Open") {
     return `
       <div class="rounded-2xl px-8 py-6 text-center
@@ -2275,6 +2581,9 @@ ${MatchdayLiveBanner()}
     `;
   }
 
+  /* ===============================
+     TOURNAMENT FULL
+  =============================== */
   if (full) {
     return `
       <div class="rounded-2xl px-8 py-6 text-center
@@ -2285,6 +2594,9 @@ ${MatchdayLiveBanner()}
     `;
   }
 
+  /* ===============================
+     PROFILE INCOMPLETE
+  =============================== */
   if (!profileComplete()) {
     return `
       <div class="rounded-[2rem] border border-orange-500/20 bg-orange-500/5 p-8 text-center space-y-4">
@@ -2294,14 +2606,19 @@ ${MatchdayLiveBanner()}
         <div class="text-slate-400 font-bold">
           Complete your profile to join tournaments.
         </div>
-        <button data-action="gotoProfile"
-          class="px-10 py-4 rounded-2xl bg-white text-black font-black uppercase tracking-widest text-[10px]">
+        <button
+          data-action="gotoProfile"
+          class="px-10 py-4 rounded-2xl bg-white text-black
+                 font-black uppercase tracking-widest text-[10px]">
           Complete Profile
         </button>
       </div>
     `;
   }
 
+  /* ===============================
+     JOIN ALLOWED
+  =============================== */
   return `
     <div class="text-center space-y-5">
       <div class="text-slate-400 font-bold">
@@ -2319,6 +2636,7 @@ ${MatchdayLiveBanner()}
     </div>
   `;
 }
+
 
 
 
@@ -3293,6 +3611,32 @@ function SupportUI() {
   `;
 }
 
+function EditRulesModal(t) {
+  return `
+    <div class="fixed inset-0 z-[999] bg-black/70 backdrop-blur flex items-center justify-center p-4">
+      <div class="w-full max-w-xl rounded-2xl border border-white/10 bg-[#0a0a0a] p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div class="font-black uppercase tracking-widest text-sm">
+            Edit Rules
+          </div>
+          <button data-action="closeEditRules" class="text-xl">✕</button>
+        </div>
+
+        <textarea id="rulesEditor"
+          class="w-full h-60 bg-black border border-white/10 rounded-xl p-4
+                 text-sm text-slate-200"
+          placeholder="Enter tournament rules…">${t.rules || ""}</textarea>
+
+        <button
+          data-action="saveRules"
+          class="mt-4 w-full px-6 py-4 rounded-xl bg-[#39FF14]
+                 text-black font-black uppercase tracking-widest text-[11px]">
+          Save Rules
+        </button>
+      </div>
+    </div>
+  `;
+}
 
 function subscribeSupportMessages(tournamentId) {
   if (subs.support) {
@@ -3607,8 +3951,17 @@ function openNav() {
 
   if (!menu || !overlay) return;
 
+  buildNavMenu(); // 🔥 IMPORTANT
+
   menu.classList.add("open");
   overlay.classList.add("show");
+
+  menu.style.opacity = "1";
+  menu.style.pointerEvents = "auto";
+
+  overlay.style.opacity = "1";
+  overlay.style.pointerEvents = "auto";
+
   document.body.classList.add("nav-open");
 }
 
@@ -3619,9 +3972,16 @@ function closeNav() {
   if (!menu || !overlay) return;
 
   menu.classList.remove("open");
-  overlay.classList.remove("show");
+
+  menu.style.opacity = "0";
+  menu.style.pointerEvents = "none";
+
+  overlay.style.opacity = "0";
+  overlay.style.pointerEvents = "none";
+
   document.body.classList.remove("nav-open");
 }
+
 
 
 navBtn?.addEventListener("click", openNav);
@@ -3725,108 +4085,182 @@ document.addEventListener("click", e => {
        10) APP ROOT RENDER
     ========================= */
     function render() {
-      // Booting
-      if (state.booting) {
-        $app.innerHTML = `
-          <div class="min-h-screen bg-[#050505] text-slate-100 flex flex-col items-center justify-center gap-6">
-            <div class="w-12 h-12 rounded-full border-2 border-white/10 border-t-[#39FF14] animate-spin"></div>
-            <div class="text-[11px] font-black uppercase tracking-[0.5em] text-slate-600">Syncing…</div>
-          </div>
-        `;
-        return;
-      }
-
-      // Anonymous → Landing only (NO DATA)
-      if (!isLoggedIn()) {
-        $app.innerHTML = `
-          ${PublicLanding()}
-          ${state.authModalOpen ? AuthModal() : ""}
-          ${ToastUI()}
-        `;
-        bindActions();
-if (state.showPaymentModal) {
-  setTimeout(() => renderPaymentQR(t), 0);
-}
-
-        return;
-      }
-
-      // Logged in
-      const t = activeTournament();
-
-      // Tournament view
-      if (t) {
-        let inner = "";
-        switch (state.tournamentTab) {
-          case "Home": inner = TabHome(t); break;
-          case "Players": inner = TabPlayers(t); break;
-          case "Standings": inner = TabStandings(t); break;
-          case "Fixtures": inner = TabFixtures(t); break;
-          case "Bracket": inner = TabBracket(t); break;
-          case "Announcements": inner = TabAnnouncements(t); break;
-          case "Support": inner = TabSupport(t); break;
-          case "Admin": inner = TabAdmin(t); break;
-          default: inner = TabHome(t);
-        }
-
-        $app.innerHTML = `
-          ${TournamentLayout(t, inner)}
-          ${state.showPaymentModal ? PaymentModal(t) : ""}
-          ${state.uiMatchModal ? MatchCenterModal(state.matches.find(x => x.id === state.uiMatchModal) || null) : ""}
-          ${state.showCreateTournament ? CreateTournamentModal() : ""}
-        `;
-        bindActions();
-        return;
-      }
-
-      // Global view
-      let content = "";
-      if (state.globalTab === "Browse Tournaments") content = PageBrowseTournaments();
-      else if (state.globalTab === "My Tournaments") content = PageMyTournaments();
-      else if (state.globalTab === "Profile") content = PageProfile();
-      else if (state.globalTab === "Admin Panel") content = PageAdminPanel();
-      else content = PageBrowseTournaments();
-
-      $app.innerHTML = `
-        ${GlobalLayout(`
-          <div class="flex items-center justify-between gap-3 mb-8 print-hidden">
-            ${ChipTabs(GLOBAL_TABS, state.globalTab, "setGlobalTab")}
-          </div>
-
-          ${content}
-        `)}
-        ${state.authModalOpen ? AuthModal() : ""}
-        ${state.showCreateTournament ? CreateTournamentModal() : ""}
-      `;
-      bindActions();
-/* =========================
-   MOBILE NAV ADMIN INJECT
-========================= */
-setTimeout(() => {
-  const slot = document.getElementById("mobileAdminSlot");
-  if (!slot) return;
-
-  const t = activeTournament();
-  if (!t) {
-    slot.innerHTML = "";
+  // Booting
+  if (state.booting) {
+    $app.innerHTML = `
+      <div class="min-h-screen bg-[#050505] text-slate-100 flex flex-col items-center justify-center gap-6">
+        <div class="w-12 h-12 rounded-full border-2 border-white/10 border-t-[#39FF14] animate-spin"></div>
+        <div class="text-[11px] font-black uppercase tracking-[0.5em] text-slate-600">
+          Syncing…
+        </div>
+      </div>
+    `;
     return;
   }
 
-  if (isAdmin(t)) {
-    slot.innerHTML = `
-      <button
-        data-action="setTournamentTab"
-        data-value="Admin"
-        class="nav-btn">
-        ⚙️ <span>Admin</span>
-      </button>
+  /* ======================================================
+     1️⃣ NOT LOGGED IN → LANDING ONLY (NO MENU)
+  ====================================================== */
+  if (!isLoggedIn()) {
+    $app.innerHTML = `
+      ${PublicLanding()}
+      ${state.authModalOpen ? AuthModal() : ""}
+      ${ToastUI()}
     `;
-  } else {
-    slot.innerHTML = "";
+    bindActions();
+    return;
   }
-}, 0);
 
+  /* ======================================================
+     2️⃣ LOGGED IN → SHARED HEADER WITH HAMBURGER
+  ====================================================== */
+  const Header = () => `
+    <div class="sticky top-0 z-50 border-b border-white/10 bg-black/80 backdrop-blur">
+      <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3 font-black uppercase tracking-widest">
+          <div class="w-9 h-9 rounded-full bg-[#39FF14] flex items-center justify-center text-black">
+            🏆
+          </div>
+          <span>PES ARENA</span>
+        </div>
+
+        <button
+          data-action="openMenu"
+          class="w-10 h-10 rounded-xl border border-white/10 bg-white/5
+                 flex items-center justify-center text-xl">
+          ☰
+        </button>
+      </div>
+    </div>
+  `;
+
+  /* ======================================================
+     3️⃣ HAMBURGER MENU (2nd PHOTO STYLE)
+  ====================================================== */
+  const Menu = () => {
+  if (!state.uiMenuOpen) return "";
+
+  const t = activeTournament();
+  const admin = t && isAdmin(t);
+
+  return `
+    <div class="fixed inset-0 z-[999]">
+      <div data-action="closeMenu"
+           class="absolute inset-0 bg-black/60"></div>
+
+      <div class="absolute top-20 right-4 w-72 rounded-2xl
+                  border border-white/10 bg-[#0a0a0a]
+                  shadow-2xl overflow-hidden">
+
+        ${
+          /* 🔹 GLOBAL (LOGGED IN, NO TOURNAMENT) */
+          !t ? `
+            <button data-action="setGlobalTab" data-value="Browse Tournaments" class="menu-item">
+              Browse Tournaments
+            </button>
+            <button data-action="setGlobalTab" data-value="My Tournaments" class="menu-item">
+              My Tournaments
+            </button>
+            <button data-action="gotoProfile" class="menu-item">
+              Profile
+            </button>
+          ` : `
+            
+            <button data-action="setTournamentTab" data-value="Home" class="menu-item">
+              Home
+            </button>
+            <button data-action="setTournamentTab" data-value="Fixtures" class="menu-item">
+              Fixtures
+            </button>
+            <button data-action="setTournamentTab" data-value="Standings" class="menu-item">
+              Standings
+            </button>
+            <button data-action="setTournamentTab" data-value="Support" class="menu-item">
+              Support
+            </button>
+
+            ${admin ? `
+              <div class="border-t border-white/10"></div>
+              <button data-action="setTournamentTab"
+                      data-value="Admin"
+                      class="menu-item text-[#39FF14]">
+                Admin Panel
+              </button>
+            ` : ""}
+
+            <div class="border-t border-white/10"></div>
+
+            <button data-action="exitTournament" class="menu-item">
+              Exit Tournament
+            </button>
+          `
+        }
+
+        <div class="border-t border-white/10"></div>
+
+        <button data-action="logout" class="menu-item text-red-400">
+          Logout
+        </button>
+      </div>
+    </div>
+  `;
+};
+
+  /* ======================================================
+     4️⃣ TOURNAMENT VIEW
+  ====================================================== */
+  const t = activeTournament();
+  if (t) {
+    let inner = "";
+    switch (state.tournamentTab) {
+      case "Home": inner = TabHome(t); break;
+      case "Players": inner = TabPlayers(t); break;
+      case "Standings": inner = TabStandings(t); break;
+      case "Fixtures": inner = TabFixtures(t); break;
+      case "Bracket": inner = TabBracket(t); break;
+      case "Announcements": inner = TabAnnouncements(t); break;
+      case "Support": inner = TabSupport(t); break;
+      case "Admin": inner = TabAdmin(t); break;
+      default: inner = TabHome(t);
     }
+
+    $app.innerHTML = `
+      ${Header()}
+      ${Menu()}
+      ${TournamentLayout(t, inner)}
+${state.uiEditRules ? EditRulesModal(t) : ""}
+
+      ${state.showPaymentModal ? PaymentModal(t) : ""}
+      ${state.uiMatchModal
+        ? MatchCenterModal(state.matches.find(x => x.id === state.uiMatchModal))
+        : ""}
+      ${state.showCreateTournament ? CreateTournamentModal() : ""}
+      ${ToastUI()}
+    `;
+    bindActions();
+    return;
+  }
+
+  /* ======================================================
+     5️⃣ GLOBAL LOGGED-IN VIEW (NO TOURNAMENT)
+  ====================================================== */
+  let content = "";
+  if (state.globalTab === "Browse Tournaments") content = PageBrowseTournaments();
+  else if (state.globalTab === "My Tournaments") content = PageMyTournaments();
+  else if (state.globalTab === "Profile") content = PageProfile();
+  else if (state.globalTab === "Admin Panel") content = PageAdminPanel();
+  else content = PageBrowseTournaments();
+
+  $app.innerHTML = `
+    ${Header()}
+    ${Menu()}
+    ${GlobalLayout(content)}
+    ${state.showCreateTournament ? CreateTournamentModal() : ""}
+    ${ToastUI()}
+  `;
+  bindActions();
+}
+
 
     /* =========================
        11) ACTION BINDINGS
@@ -3848,7 +4282,12 @@ if (window.innerWidth <= 768) {
         // AUTH
         // =========================
         if (action === "openAuth") { state.authModalOpen = true; render(); }
-        if (action === "closeAuth") { state.authModalOpen = false; render(); }
+        if (action === "closeAuth") {
+  state.authModalOpen = false;
+  state.forgotPasswordSent = false;
+  render();
+}
+
 
         if (action === "doLogin") {
           const email = document.getElementById("loginEmail")?.value || "";
@@ -3863,20 +4302,31 @@ if (window.innerWidth <= 768) {
           await authSignup(name.trim(), email.trim(), pass);
         }
 
-        if (action === "logout") await doLogout();
+        if (action === "logout") {
+  state.uiMenuOpen = false;   // ✅ CLOSE MENU
+  await doLogout();
+}
 
         // =========================
         // GLOBAL NAV
         // =========================
-        if (action === "setGlobalTab") { state.globalTab = value; render(); }
+        if (action === "setGlobalTab") {
+  state.uiMenuOpen = false;   // ✅ CLOSE MENU
+  state.globalTab = value;
+  render();
+}
         if (action === "enterTournament") { enterTournament(value); }
-        if (action === "exitTournament") { exitTournament(); }
+        if (action === "exitTournament") {
+  state.uiMenuOpen = false;   // ✅ CLOSE MENU
+  exitTournament();
+}
 
         // =========================
         // TOURNAMENT TABS (KEEP AS-IS)
         // =========================
         if (action === "setTournamentTab") {
-          state.tournamentTab = value;
+          state.uiMenuOpen = false;   // ✅ CLOSE MENU
+  state.tournamentTab = value;
 
           if (value === "Support") {
             const t = activeTournament();
@@ -3931,6 +4381,7 @@ if (window.innerWidth <= 768) {
         }
 
         if (action === "gotoProfile") {
+state.uiMenuOpen = false; 
           state.globalTab = "Profile";
           state.showProfileEdit = true;
           exitTournament();
@@ -4226,6 +4677,38 @@ if (action === "exitAdminPanel") {
           window.location.href = upiUrl;
         }
 
+if (action === "openMenu") {
+  state.uiMenuOpen = true;
+  render();
+}
+
+if (action === "closeMenu") {
+  state.uiMenuOpen = false;
+  render();
+}
+
+if (action === "editRules") {
+  state.uiEditRules = true;
+  render();
+}
+
+if (action === "closeEditRules") {
+  state.uiEditRules = false;
+  render();
+}
+
+if (action === "saveRules") {
+  const t = activeTournament();
+  const rules = document.getElementById("rulesEditor")?.value || "";
+
+  await updateDoc(doc(db, "tournaments", t.id), {
+    rules: rules.trim()
+  });
+
+  state.uiEditRules = false;
+  toast("Rules updated");
+}
+
         // =========================
         // REJECT PARTICIPANT (FIXED: moved inside try)
         // =========================
@@ -4237,6 +4720,34 @@ if (action === "exitAdminPanel") {
           });
           toast("Payment rejected");
         }
+if (action === "forgotPassword") {
+  const email = document.getElementById("loginEmail")?.value?.trim();
+
+  if (!email) {
+    toast("Enter your email to reset password");
+    return;
+  }
+
+  try {
+    await sendPasswordResetEmail(auth, email);
+
+    state.forgotPasswordSent = true;
+
+    toast("Password reset link sent to your email");
+    render();
+
+  } catch (err) {
+    console.error(err);
+
+    toast(
+      typeof err?.message === "string"
+        ? err.message
+        : "Failed to send reset email"
+    );
+  }
+}
+
+
 
 if (action === "openMobileNav") openMobileNav();
 if (action === "closeMobileNav") closeMobileNav();
@@ -4276,21 +4787,22 @@ document.addEventListener("click", (e) => {
 
 
 <!-- =========================
-  HAMBURGER MENU
+  HAMBURGER MENU (FIXED)
 ========================= -->
+
 <div id="navOverlay"
-  class="fixed inset-0 z-[160] bg-black/60 hidden"></div>
+  class="fixed inset-0 z-[160] bg-black/60 opacity-0 pointer-events-none transition-opacity">
+</div>
 
 <div id="navMenu"
-  class="fixed top-14 right-4 z-[170] hidden
+  class="fixed top-14 right-4 z-[170]
          w-56 rounded-2xl bg-[#0b0b0b]
          border border-white/10 shadow-2xl
-         overflow-hidden">
+         opacity-0 pointer-events-none
+         transition-all duration-200">
 
   <div id="navMenuItems" class="divide-y divide-white/5"></div>
 </div>
-<div id="navOverlay" onclick="closeNav()"></div>
-
 
 </body>
 </html>
