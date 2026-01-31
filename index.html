@@ -506,8 +506,24 @@ myTournaments: [],
 };
 
 
-    const GLOBAL_TABS = ["Browse Tournaments", "My Tournaments", "Profile", "Admin Panel"];
-    const TOURNEY_TABS = ["Home", "Players", "Standings", "Fixtures", "Bracket", "Announcements", "Support", "Admin"];
+    const GLOBAL_TABS = [
+  "Browse Tournaments",
+  "My Tournaments",
+  "Profile",
+  ...(state.user && state.user.isPlatformAdmin ? ["Admin Panel"] : [])
+];
+
+    const TOURNEY_TABS = [
+  "Home",
+  "Players",
+  "Standings",
+  "Fixtures",
+  "Bracket",
+  "Announcements",
+  "Support",
+  ...(activeTournament() && isAdmin(activeTournament()) ? ["Admin"] : [])
+];
+
 
     function isLoggedIn() {
       return !!state.user && !state.user.isAnonymous;
@@ -530,6 +546,30 @@ function isRegistered(t) {
 
     function hasJoinedTournament(tid) {
   return state.myJoinedTournamentIds.includes(tid);
+}
+function getTournamentPlayerCount(t) {
+  return state.participants.filter(p =>
+    p.tournamentId === t.id &&
+    ["pending", "approved"].includes(p.status)
+  ).length;
+}
+
+function getEffectivePlayerCount(t) {
+  if (!t?.id) return 0;
+
+  // FREE tournament → count joined users
+  if (t.type === "Free") {
+    return state.participants.filter(p =>
+      p.tournamentId === t.id &&
+      p.status === "joined"
+    ).length;
+  }
+
+  // PAID tournament → count approved users
+  return state.participants.filter(p =>
+    p.tournamentId === t.id &&
+    p.status === "approved"
+  ).length;
 }
 
 
@@ -906,10 +946,10 @@ subscribeMyTournaments();
     }
 
     async function requestJoinTournament(t) {
- const uid = state.user?.uid;
+  const uid = state.user?.uid;
   if (!uid) throw new Error("Not logged in");
 
-  // 🔒 FINAL CLIENT CHECK
+  // 🔒 Prevent double join / apply
   const existing = state.participants.find(p =>
     p.userId === uid &&
     p.tournamentId === t.id &&
@@ -919,60 +959,77 @@ subscribeMyTournaments();
   if (existing) {
     throw new Error("You have already applied for this tournament");
   }
-      if (!state.user || !t) return;
 
-      // gating
-      if (!profileComplete()) {
-        toast("Complete profile to join");
-        state.globalTab = "Profile";
-        state.showProfileEdit = true;
-        exitTournament();
-        render();
-        return;
-      }
+  // 🧾 Profile check
+  if (!profileComplete()) {
+    toast("Complete profile to join");
+    state.globalTab = "Profile";
+    state.showProfileEdit = true;
+    exitTournament();
+    render();
+    return;
+  }
 
-      if (t.status !== "Registration Open") {
-        toast("Registration closed");
-        return;
-      }
+  // 🚫 Registration closed checks
+  const now = Date.now();
+  const deadlinePassed = t.deadline && now > Number(t.deadline);
 
-      const full = Number(t.playerCount || 0) >= Number(t.maxPlayers || 0);
-const deadlinePassed = t.deadline && Date.now() > Number(t.deadline);
-const registrationClosed = full || deadlinePassed || t.status !== "Registration Open";
+  if (t.status !== "Registration Open" || deadlinePassed) {
+    toast("Registration closed");
+    return;
+  }
 
-      if (full) {
-        toast("Tournament full");
-        return;
-      }
+  // 🧮 SLOT CHECK — USE EFFECTIVE COUNT (NOT playerCount)
+  const joinedCount = getEffectivePlayerCount(t);
+  if (joinedCount >= Number(t.maxPlayers || 0)) {
+    toast("Tournament full");
+    return;
+  }
 
-      // paid flow
-      if (t.type === "Paid" && Number(t.entryFee||0) > 0) {
-  state.showPaymentModal = true;
-  state.paymentUTR = "";
+  // 💰 PAID TOURNAMENT → PAYMENT FLOW
+  if (t.type === "Paid" && Number(t.entryFee || 0) > 0) {
+    state.showPaymentModal = true;
+    state.paymentUTR = "";
 
-  // ⏱️ 10-minute payment window
-  state.paymentExpiresAt = Date.now() + (5 * 60 * 1000);
-  state.paymentSessionId = crypto.randomUUID();
+    // ⏱️ payment window
+    state.paymentExpiresAt = Date.now() + (5 * 60 * 1000);
+    state.paymentSessionId = crypto.randomUUID();
 
+    render();
+    return;
+  }
+
+  // 🟢 FREE TOURNAMENT → JOIN IMMEDIATELY
+  await addDoc(collection(db, "participants"), {
+    tournamentId: t.id,
+    userId: uid,
+    status: "joined",              // ✅ CRITICAL FIX
+    paymentStatus: "FREE",
+    joinedAt: now(),
+    createdAt: now()
+  });
+
+  toast("Successfully joined the tournament");
   render();
-  return;
-}
+
+
 
 
       await finalizeJoin(t, null);
     }
 
-  async function finalizeJoin(t, utr) {
+ async function finalizeJoin(t, utr) {
   if (!state.user || !t) return;
 
   const uid = state.user.uid;
-  const pid = `${uid}_${t.id}`; // 🔒 FIXED & UNIQUE
+  const pid = `${uid}_${t.id}`;
 
-  // ⛔ FINAL SAFETY: if already exists, block
+  // ⛔ FINAL SAFETY
   const exists = state.participants.find(p =>
-    p.id === pid ||
-    (p.userId === uid && p.tournamentId === t.id)
-  );
+  p.id === pid ||
+  (p.userId === uid && p.tournamentId === t.id)
+);
+
 
   if (exists) {
     toast("You have already applied or joined");
@@ -997,8 +1054,9 @@ const registrationClosed = full || deadlinePassed || t.status !== "Registration 
   render();
 
   try {
+    // 1️⃣ Create participant
     await setDoc(
-      doc(db, "participants", pid), // 🔒 FIXED DOC ID
+      doc(db, "participants", pid),
       {
         tournamentId: t.id,
         userId: uid,
@@ -1014,6 +1072,14 @@ const registrationClosed = full || deadlinePassed || t.status !== "Registration 
         createdAt: serverTimestamp()
       }
     );
+
+    // 2️⃣ 🔥 IMPORTANT: increment ONLY for FREE tournaments
+    if (t.type === "Free") {
+      await updateDoc(
+        doc(db, "tournaments", t.id),
+        { playerCount: increment(1) }
+      );
+    }
 
     toast(
       t.type === "Paid"
@@ -1032,6 +1098,8 @@ const registrationClosed = full || deadlinePassed || t.status !== "Registration 
     render();
   }
 }
+
+
 
 
 
@@ -2144,40 +2212,80 @@ async function checkAndEndMatchdays(tournamentId) {
       `;
     }
 
-    function TournamentCard(t) {
-      const fee = t.type === "Paid" ? `INR ${Number(t.entryFee||0)}` : "FREE";
-      const p = `${Number(t.playerCount||0)}/${Number(t.maxPlayers||0)}`;
-      return `
-        <div class="group rounded-[2.2rem] border border-white/10 bg-[#0a0a0a] p-8 shadow-2xl cursor-pointer hover:border-[#39FF14]/40 transition-all relative overflow-hidden"
-             data-action="enterTournament" data-value="${esc(t.id)}">
-          <div class="absolute top-0 left-0 w-1 h-full bg-[#39FF14] opacity-0 group-hover:opacity-100"></div>
-          <div class="absolute -bottom-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full opacity-50"></div>
+   function TournamentCard(t) {
+  const fee = t.type === "Paid" ? `INR ${Number(t.entryFee || 0)}` : "FREE";
+  const slots = Number(t.maxPlayers || 0);
 
-          <div class="relative z-10 space-y-3">
-            <div class="flex flex-wrap gap-2">
-              <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">${esc(t.format||"League")}</span>
-              <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">${esc(t.mode||"Normal")}</span>
-              <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-[#39FF14]/30 text-[#39FF14] bg-[#39FF14]/5">${esc(t.status||"Open")}</span>
+  return `
+    <div class="group rounded-[2.2rem] border border-white/10 bg-[#0a0a0a] p-8 shadow-2xl cursor-pointer hover:border-[#39FF14]/40 transition-all relative overflow-hidden"
+         data-action="enterTournament" data-value="${esc(t.id)}">
+      <div class="absolute top-0 left-0 w-1 h-full bg-[#39FF14] opacity-0 group-hover:opacity-100"></div>
+      <div class="absolute -bottom-24 -right-24 w-72 h-72 bg-[#39FF14]/10 blur-3xl rounded-full opacity-50"></div>
+
+      <div class="relative z-10 space-y-3">
+        <div class="flex flex-wrap gap-2">
+          <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">
+            ${esc(t.format || "League")}
+          </span>
+          <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">
+            ${esc(t.mode || "Normal")}
+          </span>
+
+          ${(() => {
+            const now = Date.now();
+            const deadlinePassed = t.deadline && now > Number(t.deadline);
+
+            // (optional) full check still based on tournament doc, but card won’t show count anyway
+            const full = Number(t.playerCount || 0) >= Number(t.maxPlayers || 0);
+
+            const isOpen =
+              t.status === "Registration Open" &&
+              !deadlinePassed &&
+              !full;
+
+            return `
+              <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest
+                ${
+                  isOpen
+                    ? "border border-[#39FF14]/30 text-[#39FF14] bg-[#39FF14]/5"
+                    : "border border-red-500/30 text-red-400 bg-red-500/5"
+                }">
+                ${isOpen ? "REGISTRATION OPEN" : "REGISTRATION CLOSED"}
+              </span>
+            `;
+          })()}
+        </div>
+
+        <div class="text-2xl font-black italic uppercase tracking-tighter text-white group-hover:text-[#39FF14] transition-colors">
+          ${esc(t.name || "Tournament")}
+        </div>
+        <div class="text-[10px] font-black uppercase tracking-[0.4em] text-slate-600">
+          ${esc(t.game || "eFootball")}
+        </div>
+
+        <div class="pt-5 border-t border-white/10 flex items-center justify-between">
+          <div class="flex gap-2">
+            <!-- ✅ ONLY SLOTS (NO 0/16) -->
+            <div class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-[9px] font-black uppercase tracking-widest text-slate-300">
+              SLOTS ${esc(String(slots))}
             </div>
 
-            <div class="text-2xl font-black italic uppercase tracking-tighter text-white group-hover:text-[#39FF14] transition-colors">
-              ${esc(t.name || "Tournament")}
-            </div>
-            <div class="text-[10px] font-black uppercase tracking-[0.4em] text-slate-600">${esc(t.game || "eFootball")}</div>
-
-            <div class="pt-5 border-t border-white/10 flex items-center justify-between">
-              <div class="flex gap-2">
-                <div class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-[9px] font-black uppercase tracking-widest text-slate-300">${esc(p)}</div>
-                <div class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-[9px] font-black uppercase tracking-widest text-slate-300">${esc(fee)}</div>
-              </div>
-              <div class="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center group-hover:bg-[#39FF14] group-hover:text-black transition-all">
-                ${Icon("chevron","w-6 h-6")}
-              </div>
+            <div class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-[9px] font-black uppercase tracking-widest text-slate-300">
+              ${esc(fee)}
             </div>
           </div>
+
+          <div class="w-11 h-11 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center group-hover:bg-[#39FF14] group-hover:text-black transition-all">
+            ${Icon("chevron", "w-6 h-6")}
+          </div>
         </div>
-      `;
-    }
+      </div>
+    </div>
+  `;
+}
+
+
+
 
     function PageMyTournaments() {
 
@@ -2438,7 +2546,9 @@ function MatchdayLiveBanner() {
    function TabHome(t) {
   const registered = isRegistered(t);
   const fee = t.type === "Paid" ? `INR ${Number(t.entryFee || 0)}` : "FREE";
-  const full = (Number(t.playerCount || 0) >= Number(t.maxPlayers || 0));
+  const full =
+  getTournamentPlayerCount(t) >= Number(t.maxPlayers || 0);
+
   const canEditRules = isAdmin(t); // organizer or admin
 
   return `
@@ -2456,11 +2566,22 @@ function MatchdayLiveBanner() {
             </span>
             <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border border-white/10 text-slate-400">
               ${esc(t.mode || "Normal")}
-            </span>
-            <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest
-                         border border-[#39FF14]/30 text-[#39FF14] bg-[#39FF14]/5">
-              ${esc(t.status || "")}
-            </span>
+            ${(() => {
+    const deadlinePassed = t.deadline && Date.now() > Number(t.deadline);
+    const registrationOpen =
+      t.status === "Registration Open" && !deadlinePassed;
+
+    return `
+      <span class="px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest
+        border ${
+          registrationOpen
+            ? "border-[#39FF14]/30 text-[#39FF14] bg-[#39FF14]/5"
+            : "border-red-500/30 text-red-400 bg-red-500/5"
+        }">
+        ${registrationOpen ? "Registration Open" : "Registration Closed"}
+      </span>
+    `;
+  })()}
           </div>
 
           <h1 class="text-4xl md:text-6xl font-black italic uppercase tracking-tighter leading-none">
@@ -2468,7 +2589,11 @@ function MatchdayLiveBanner() {
           </h1>
 
           <div class="flex flex-wrap gap-4">
-            ${Stat("Players", `${Number(t.playerCount || 0)} / ${Number(t.maxPlayers || 0)}`)}
+            ${Stat(
+  "Players",
+  `${getTournamentPlayerCount(t)} / ${Number(t.maxPlayers || 0)}`
+)}
+
             ${Stat("Entry", fee)}
             ${t.deadline ? Stat("Registration Closes", fmtDT(t.deadline)) : ""}
           </div>
@@ -4137,14 +4262,10 @@ document.addEventListener("click", e => {
   /* ======================================================
      3️⃣ HAMBURGER MENU (2nd PHOTO STYLE)
   ====================================================== */
-  const Menu = () => {
-  if (!state.uiMenuOpen) return "";
-
-  const t = activeTournament();
-  const admin = t && isAdmin(t);
-
-  return `
+ const Menu = () => `
+  ${state.uiMenuOpen ? `
     <div class="fixed inset-0 z-[999]">
+      <!-- backdrop -->
       <div data-action="closeMenu"
            class="absolute inset-0 bg-black/60"></div>
 
@@ -4153,58 +4274,126 @@ document.addEventListener("click", e => {
                   shadow-2xl overflow-hidden">
 
         ${
-          /* 🔹 GLOBAL (LOGGED IN, NO TOURNAMENT) */
-          !t ? `
-            <button data-action="setGlobalTab" data-value="Browse Tournaments" class="menu-item">
-              Browse Tournaments
-            </button>
-            <button data-action="setGlobalTab" data-value="My Tournaments" class="menu-item">
-              My Tournaments
-            </button>
-            <button data-action="gotoProfile" class="menu-item">
-              Profile
-            </button>
-          ` : `
-            
-            <button data-action="setTournamentTab" data-value="Home" class="menu-item">
-              Home
-            </button>
-            <button data-action="setTournamentTab" data-value="Fixtures" class="menu-item">
-              Fixtures
-            </button>
-            <button data-action="setTournamentTab" data-value="Standings" class="menu-item">
-              Standings
-            </button>
-            <button data-action="setTournamentTab" data-value="Support" class="menu-item">
-              Support
+          /* =========================================
+             ADMIN PANEL MENU (INSIDE ADMIN TAB)
+          ========================================= */
+          state.inAdminPanel
+          ? `
+            <button data-action="setAdminTab" data-value="Participants" class="menu-item">
+              Participants
             </button>
 
-            ${admin ? `
-              <div class="border-t border-white/10"></div>
-              <button data-action="setTournamentTab"
-                      data-value="Admin"
-                      class="menu-item text-[#39FF14]">
-                Admin Panel
-              </button>
-            ` : ""}
+            <button data-action="setAdminTab" data-value="Fixtures" class="menu-item">
+              Fixtures
+            </button>
+
+            <button data-action="setAdminTab" data-value="Announcements" class="menu-item">
+              Announcements
+            </button>
+
+            <button data-action="setAdminTab" data-value="Disputes" class="menu-item">
+              Disputes
+            </button>
+
+            <button data-action="setAdminTab" data-value="Permissions" class="menu-item">
+              Permissions
+            </button>
+
+            <div class="border-t border-white/10"></div>
+
+            <button data-action="exitAdminPanel"
+                    class="menu-item text-[#39FF14]">
+              ← Back to Tournament
+            </button>
 
             <div class="border-t border-white/10"></div>
 
             <button data-action="exitTournament" class="menu-item">
               Exit Tournament
             </button>
+
+            <button data-action="logout" class="menu-item text-red-400">
+              Logout
+            </button>
+          `
+          /* =========================================
+             INSIDE TOURNAMENT (NORMAL / ADMIN)
+          ========================================= */
+          : activeTournament()
+          ? `
+            <button data-action="setTournamentTab" data-value="Home" class="menu-item">
+              Home
+            </button>
+
+            <button data-action="setTournamentTab" data-value="Fixtures" class="menu-item">
+              Fixtures
+            </button>
+
+            <button data-action="setTournamentTab" data-value="Standings" class="menu-item">
+              Standings
+            </button>
+
+            <button data-action="setTournamentTab" data-value="Support" class="menu-item">
+              Support
+            </button>
+
+            ${
+              isAdmin(activeTournament())
+                ? `
+                  <div class="border-t border-white/10"></div>
+                  <button data-action="enterAdminPanel"
+                          class="menu-item text-[#39FF14]">
+                    Admin Panel
+                  </button>
+                `
+                : ""
+            }
+
+            <div class="border-t border-white/10"></div>
+
+            <button data-action="exitTournament" class="menu-item">
+              Exit Tournament
+            </button>
+
+            <button data-action="logout" class="menu-item text-red-400">
+              Logout
+            </button>
+          `
+          /* =========================================
+             GLOBAL LOGGED-IN MENU (NO TOURNAMENT)
+          ========================================= */
+          : `
+            <button data-action="setGlobalTab"
+                    data-value="Browse Tournaments"
+                    class="menu-item">
+              Browse Tournaments
+            </button>
+
+            <button data-action="setGlobalTab"
+                    data-value="My Tournaments"
+                    class="menu-item">
+              My Tournaments
+            </button>
+
+            <button data-action="setGlobalTab"
+                    data-value="Profile"
+                    class="menu-item">
+              Profile
+            </button>
+
+            <div class="border-t border-white/10"></div>
+
+            <button data-action="logout" class="menu-item text-red-400">
+              Logout
+            </button>
           `
         }
-
-        <div class="border-t border-white/10"></div>
-
-        <button data-action="logout" class="menu-item text-red-400">
-          Logout
-        </button>
       </div>
     </div>
-  `;
-};
+  ` : ""}
+`;
+
+
 
   /* ======================================================
      4️⃣ TOURNAMENT VIEW
@@ -4276,6 +4465,20 @@ if (window.innerWidth <= 768) {
 
       const action = el.getAttribute("data-action");
       const value = el.getAttribute("data-value");
+  // ✅ AUTO-CLOSE HAMBURGER MENU FOR MENU ACTIONS
+  const menuActions = [
+    "setTournamentTab",
+    "setAdminTab",
+    "enterAdminPanel",
+    "exitAdminPanel",
+    "exitTournament",
+    "logout"
+  ];
+
+  if (menuActions.includes(action)) {
+    state.uiMenuOpen = false;
+  }
+
 
       try {
         // =========================
@@ -4328,6 +4531,11 @@ if (window.innerWidth <= 768) {
           state.uiMenuOpen = false;   // ✅ CLOSE MENU
   state.tournamentTab = value;
 
+if (value === "Admin" && (!t || !isAdmin(t))) {
+    toast("Access denied");
+    state.uiMenuOpen = false;
+    return;
+  }
           if (value === "Support") {
             const t = activeTournament();
             if (!t) return;
